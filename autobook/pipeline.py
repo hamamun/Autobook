@@ -44,7 +44,10 @@ class PrepareResult:
 def prepare(files: list[Path],
             work_root: Path | None = None,
             out_dir: Path | None = None,
-            profiles=None) -> PrepareResult:
+            profiles=None,
+            sku_suffix: str = "",
+            commodity_code: str = "",
+            country_of_origin: str = "") -> PrepareResult:
     """Run the whole Prepare step for ``files``.
 
     Raises :class:`PrepareError` only when nothing at all can be done (no files,
@@ -94,7 +97,10 @@ def prepare(files: list[Path],
             out_path = target_dir / template.format(
                 stamp=f"{datetime.now():%Y%m%d-%H%M%S}-{counter}")
             counter += 1
-        data_sheet = write_workbook(results, out_path)
+        data_sheet = write_workbook(results, out_path,
+                                    sku_suffix=sku_suffix,
+                                    commodity_code=commodity_code,
+                                    country_of_origin=country_of_origin)
 
     return PrepareResult(batch_dir=batch_dir, data_sheet=data_sheet,
                          results=results, copied=copied, problems=problems)

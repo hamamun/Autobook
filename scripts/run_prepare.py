@@ -24,10 +24,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("files", nargs="+", type=Path, help="packing list files")
     parser.add_argument("--work", type=Path, default=None, help="override work directory")
     parser.add_argument("--out", type=Path, default=None, help="override output directory")
+    parser.add_argument("--sku-suffix", default="",
+                        help="suffix appended to portal SKUs, e.g. BWI")
     args = parser.parse_args(argv)
 
     try:
-        result = prepare(args.files, work_root=args.work, out_dir=args.out)
+        result = prepare(args.files, work_root=args.work, out_dir=args.out,
+                         sku_suffix=args.sku_suffix)
     except PrepareError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

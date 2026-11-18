@@ -20,8 +20,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from .booking import BookingLine, build_all
 from .models import PackingList
-from .schema import COLUMNS, SHEET_LINES, SHEET_REVIEW, SHEET_SUMMARY, Column
+from .schema import (COLUMNS, SHEET_BOOKING, SHEET_LINES, SHEET_REVIEW, SHEET_SUMMARY,
+                     Column)
 
 _FONT = Font(size=10)
 _HEAD_FILL = PatternFill("solid", fgColor="1F3864")
@@ -100,7 +102,10 @@ def summary_row(pl: PackingList) -> dict[str, object]:
 
 
 def write_workbook(results: list[PackingList], out_path: Path,
-                   prepared_at: datetime | None = None) -> Path:
+                   prepared_at: datetime | None = None,
+                   sku_suffix: str = "",
+                   commodity_code: str = "",
+                   country_of_origin: str = "") -> Path:
     """Write the data sheet and return its path."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,7 +167,62 @@ def write_workbook(results: list[PackingList], out_path: Path,
                     cell.number_format = column.number_format
             row += 1
 
-    # ---- sheet 3: what a human must look at ------------------------------
+    # ---- sheet 3: one row per portal SKU ---------------------------------
+    booking_columns = [
+        Column("source_file", "Source file", 30),
+        Column("sku", "SKU number", 22),
+        Column("ordered_qty", "Ordered quantity", 11, "#,##0"),
+        Column("booked_qty", "Booked quantity", 11, "#,##0"),
+        Column("units_qty", "Units (booked qty)", 12),
+        Column("booked_packages", "Booked packages", 11, "#,##0"),
+        Column("units_pkg", "Units (booked pkg)", 12),
+        Column("qty_per_package", "Qty per package", 11, "#,##0"),
+        Column("booked_volume", "Booked volume", 11, "#,##0.0000"),
+        Column("booked_gross_kg", "Booked gross weight", 12, "#,##0.00"),
+        Column("marks", "Marks and numbers", 14),
+        Column("description", "Description of goods", 42),
+        Column("cargo_type", "Cargo type", 11),
+        Column("commodity_code", "Commodity code", 12),
+        Column("country_of_origin", "Country of origin", 11),
+        Column("carton_numbers", "Cartons in this SKU", 18),
+        Column("notes", "Notes", 44),
+    ]
+    booking_lines: list[BookingLine] = build_all(results, sku_suffix=sku_suffix)
+    ws4 = wb.create_sheet(SHEET_BOOKING)
+    _style_header(ws4, booking_columns)
+    for row_index, line in enumerate(booking_lines, start=2):
+        values = {
+            "source_file": line.source_file,
+            "sku": line.sku,
+            "ordered_qty": line.ordered_qty,
+            "booked_qty": line.booked_qty,
+            "units_qty": "Each",
+            "booked_packages": line.booked_packages,
+            "units_pkg": "Carton",
+            "qty_per_package": line.qty_per_package,
+            "booked_volume": line.booked_volume,
+            "booked_gross_kg": line.booked_gross_kg,
+            "marks": "",
+            "description": line.description,
+            "cargo_type": "",
+            "commodity_code": commodity_code,
+            "country_of_origin": country_of_origin,
+            "carton_numbers": ", ".join(line.carton_numbers),
+            "notes": "; ".join(line.notes),
+        }
+        for col_index, column in enumerate(booking_columns, start=1):
+            cell = ws4.cell(row=row_index, column=col_index, value=values.get(column.key))
+            cell.font = _FONT
+            cell.border = _THIN
+            if column.number_format:
+                cell.number_format = column.number_format
+            cell.alignment = Alignment(vertical="top", wrap_text=column.key in
+                                       {"description", "notes", "carton_numbers"})
+    if not booking_lines:
+        ws4.cell(row=2, column=1, value="No carton lines to convert").font = Font(
+            italic=True, size=10)
+
+    # ---- sheet 4: what a human must look at ------------------------------
     review_columns = [
         Column("source_file", "Source file", 30),
         Column("field", "Field", 18),
@@ -199,6 +259,10 @@ def write_workbook(results: list[PackingList], out_path: Path,
     info["B4"] = len(results)
     info["A5"] = "Carton lines"
     info["B5"] = sum(len(pl.cartons) for pl in results)
+    info["A8"] = "Booking lines (one per SKU)"
+    info["B8"] = len(booking_lines)
+    info["A9"] = "SKU suffix used"
+    info["B9"] = sku_suffix or "(none - set it in settings)"
     info["A6"] = "Open issues"
     info["B6"] = sum(len(pl.issues) for pl in results)
     info.column_dimensions["A"].width = 18
