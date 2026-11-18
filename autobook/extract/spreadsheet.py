@@ -171,6 +171,25 @@ def _read_cartons(pl: PackingList, profile: Profile, grid: Grid) -> None:
             if colour_cell:
                 colour = colour_cell  # forward-fill: colour is written once per block
 
+        # The figure that reconciles with the header total. When the profile does
+        # not name one, assume each row is a single carton.
+        ctn_count = 1
+        if spec.ctn_count_col is not None:
+            raw_count = cell(grid, r, spec.ctn_count_col)
+            try:
+                ctn_count = int(float(raw_count.replace(",", "")))
+            except ValueError:
+                ctn_count = 0
+            if ctn_count <= 0:
+                # A missing or unreadable count would silently undercount the batch, so
+                # assume one carton and flag it instead of hiding the problem.
+                ctn_count = 1
+                if raw_count == "":
+                    pl.add_issue("total_cartons",
+                                 f"Carton row {tag}: the carton-count column is empty; "
+                                 "counted as 1 carton",
+                                 "Check this row in the packing list", "review")
+
         def number(col: int | None) -> float:
             if col is None:
                 return 0.0
@@ -192,6 +211,8 @@ def _read_cartons(pl: PackingList, profile: Profile, grid: Grid) -> None:
                 continue
             pl.cartons.append(CartonLine(
                 carton_no=tag,
+                ctn_count=ctn_count,
+                row_ref=r,
                 colour=colour,
                 size=size,
                 qty=qty,
@@ -225,7 +246,8 @@ def _reconcile(pl: PackingList) -> None:
     if pl.total_cartons is not None and pl.cartons:
         if pl.carton_count != pl.total_cartons:
             pl.add_issue("total_cartons",
-                         f"Header says {pl.total_cartons} cartons, rows show {pl.carton_count}",
+                         f"Header says {pl.total_cartons} cartons, "
+                         f"carton-count column totals {pl.carton_count}",
                          "Check the carton table", "review")
 
     if pl.total_gross_kg is not None and pl.cartons:

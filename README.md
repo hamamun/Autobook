@@ -19,14 +19,17 @@ This milestone delivers the first two stages: file intake and data sheet prepara
 
 ## Run it
 
-```bash
+```bat
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -e .
+.venv\Scripts\activate          :: Windows (cmd)
+pip install -e ".[dev]"
 python -m autobook
 ```
 
 Linux/macOS activate with `source .venv/bin/activate`.
+
+The entry point is `autobook/__main__.py`; **run the package, not a file**. Details,
+VS Code setup and troubleshooting: `docs/running-in-vscode.md`.
 
 ## Where files go
 
@@ -69,10 +72,14 @@ so the operator can see it was not used.
 
 Supplier name, Supplier address, Buyer / brand, Order no, Split PO no, Style no,
 Description, Destination country, Order qty, Ship qty, Short ship, Total cartons,
-Total net wt, Total gross wt, Total CBM, Colour / size breakdown, Source file,
-Confidence, Notes / issues.
+Total net wt, Total gross wt, Total CBM, Source file, Confidence, Notes / issues — 18
+columns, defined once in `autobook/schema.py`. (The colour/size breakdown column was
+removed: the detail lives in the `Carton_lines` tab.)
 
-Defined once in `autobook/schema.py`.
+**Total cartons** is the sum of the packing list's **CTN QTY** column, not a count of
+table rows. In these documents "CTN NO" is a label and one row can cover several cartons
+(e.g. row 10 with CTN QTY 3), so counting rows undercounts. The `Carton_lines` tab shows
+`Cartons (per source row)` once per row, so that column adds up to the same total.
 
 ## Deliberate limits in this milestone
 

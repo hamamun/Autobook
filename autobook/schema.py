@@ -34,7 +34,6 @@ COLUMNS: tuple[Column, ...] = (
     Column("total_net_kg", "Total net wt (kg)", 12, "#,##0.00"),
     Column("total_gross_kg", "Total gross wt (kg)", 12, "#,##0.00"),
     Column("total_cbm", "Total CBM", 10, "#,##0.0000"),
-    Column("colour_size", "Colour / size breakdown", 40),
     Column("source_file", "Source file", 34),
     Column("confidence", "Confidence", 12),
     Column("issues", "Notes / issues", 48),

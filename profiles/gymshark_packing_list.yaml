@@ -63,6 +63,10 @@ cartons:
   header_label: "CTN NO"
   stop_label: "SUMMARY"
   carton_no_col: 0
+  # "CTN QTY" sits immediately right of "CTN NO". The header's total-carton figure
+  # reconciles with this column, not with a count of rows: one row can cover several
+  # cartons, so counting rows undercounts the batch.
+  ctn_count_col: 2
   colour_col: 3
   size_start_col: 5
   size_end_col: 12
