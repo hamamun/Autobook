@@ -1,0 +1,73 @@
+name: gymshark_packing_list
+
+# Matched against the first few rows of the document (case-insensitive substring).
+match:
+  any_of:
+    - "PACKING LIST"
+
+fields:
+  doc_type:
+    cell: [2, 0]
+  supplier:
+    cell: [0, 0]
+  supplier_address:
+    cell: [1, 0]
+    strip_prefix: "ADDRESS:"
+  style_no:
+    label: "STYLE NO"
+  split_po_no:
+    label: "SPLIT PO NO"
+  description:
+    label: "DESCRIPTION"
+  order_qty:
+    label: "ORDER QTY"
+    cast: int
+  ship_qty:
+    label: "SHIP QTY"
+    cast: int
+  # The value cell is blank in these documents; recover the order number from the
+  # file name (…-GS-3844 SEA CA.csv) and flag it for review.
+  order_no:
+    label: "ORDER NO"
+    fallback_filename_regex: '-GS-(\d+)\s'
+    fallback_severity: review
+  # Buyer code and destination are not labelled fields in these documents; both are
+  # encoded in the file name (JMF-26-GS-3844 SEA CA) and reported as low-risk notes.
+  buyer:
+    fallback_filename_regex: '-\d{2}-([A-Z]+)-\d+'
+    fallback_severity: review
+  # Filename ends with the lane: "3844 SEA CA" -> CA.
+  # Matched against the file name *without* its extension, so a copy saved as
+  # "… SEA CA (2).xlsx" still yields CA.
+  destination:
+    fallback_filename_regex: '\s([A-Z]{2})(?:\s*\(\d+\))?$'
+    fallback_severity: review
+  total_cartons:
+    label: "TOTAL CARTON"
+    label_value_offset: 4
+    cast: int
+  total_net_kg:
+    label: "TOTAL NET WEIGHT"
+    label_value_offset: 4
+    cast: float
+  total_gross_kg:
+    label: "TOTAL GROSS WEIGHT"
+    label_value_offset: 4
+    cast: float
+  total_cbm:
+    label: "TOTAL CBM"
+    label_value_offset: 4
+    cast: float
+
+cartons:
+  header_label: "CTN NO"
+  stop_label: "SUMMARY"
+  carton_no_col: 0
+  colour_col: 3
+  size_start_col: 5
+  size_end_col: 12
+  per_ctn_col: 13
+  total_pcs_col: 14
+  net_col: 17
+  gross_col: 18
+  cbm_col: 20

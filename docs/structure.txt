@@ -1,0 +1,22 @@
+autobook/
+├─ __init__.py
+├─ __main__.py            # python -m autobook
+├─ paths.py               # work dir, output dir, settings location
+├─ settings.py            # last browse folder etc. (JSON, atomic save)
+├─ models.py              # PackingList / CartonLine / Issue
+├─ schema.py              # the predefined output headers (single source of truth)
+├─ workdir.py             # copy files into the fixed work dir, safely
+├─ pipeline.py            # Prepare step (UI-agnostic)
+├─ writer.py              # builds the data sheet workbook
+├─ extract/
+│  ├─ __init__.py         # dispatch csv/xlsx/pdf -> PackingList
+│  ├─ grid.py             # csv/xlsx -> grid of strings
+│  ├─ profiles.py         # YAML profile loading + matching
+│  ├─ spreadsheet.py      # profile-driven extraction + reconciliation
+│  └─ pdf.py              # PDF text layer detection (table mapping: pending)
+└─ ui/
+   └─ app.py              # tkinter window
+profiles/
+└─ gymshark_packing_list.yaml
+tests/
+docs/
