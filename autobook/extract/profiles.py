@@ -57,6 +57,7 @@ class CartonSpec:
     header_label: str
     stop_label: str | None = None
     carton_no_col: int = 0
+    ctn_count_col: int | None = None
     colour_col: int | None = None
     size_start_col: int = 5
     size_end_col: int = 12
@@ -135,6 +136,7 @@ def _parse_carton(raw: dict[str, Any], where: str) -> CartonSpec:
         header_label=_require(raw, "header_label", f"{where}.cartons"),
         stop_label=raw.get("stop_label"),
         carton_no_col=int(raw.get("carton_no_col", 0)),
+        ctn_count_col=(int(raw["ctn_count_col"]) if raw.get("ctn_count_col") is not None else None),
         colour_col=(int(raw["colour_col"]) if raw.get("colour_col") is not None else None),
         size_start_col=int(raw.get("size_start_col", 5)),
         size_end_col=int(raw.get("size_end_col", 12)),

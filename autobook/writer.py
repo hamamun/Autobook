@@ -48,11 +48,6 @@ def _style_header(ws: Worksheet, columns: tuple[Column, ...] | list[Column]) -> 
     ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}1"
 
 
-def _breakdown(pl: PackingList) -> str:
-    parts = [f"{colour} {size}: {qty}" for colour, size, qty in pl.colour_size_totals()]
-    return "; ".join(parts)
-
-
 def _issues_text(pl: PackingList) -> str:
     return " | ".join(f"{issue.field}: {issue.problem}" for issue in pl.issues)
 
@@ -98,7 +93,6 @@ def summary_row(pl: PackingList) -> dict[str, object]:
         "total_net_kg": pl.total_net_kg,
         "total_gross_kg": pl.total_gross_kg,
         "total_cbm": pl.total_cbm,
-        "colour_size": _breakdown(pl),
         "source_file": pl.source.name,
         "confidence": _worst_confidence(pl),
         "issues": _issues_text(pl),
@@ -127,7 +121,7 @@ def write_workbook(results: list[PackingList], out_path: Path,
             if column.number_format:
                 cell.number_format = column.number_format
             cell.alignment = Alignment(vertical="top", wrap_text=column.key in
-                                       {"supplier_address", "colour_size", "issues"})
+                                       {"supplier_address", "issues"})
         confidence_cell = ws.cell(row=row_index, column=COLUMNS.index(
             next(c for c in COLUMNS if c.key == "confidence")) + 1)
         confidence_cell.fill = _CONF_FILL.get(str(confidence_cell.value), _CONF_FILL["low"])
@@ -138,7 +132,8 @@ def write_workbook(results: list[PackingList], out_path: Path,
     # ---- sheet 2: carton detail ------------------------------------------
     detail_columns = [
         Column("source_file", "Source file", 30),
-        Column("carton_no", "Carton no", 10),
+        Column("carton_no", "Carton no", 12),
+        Column("ctn_count", "Cartons (per source row)", 14, "#,##0"),
         Column("colour", "Colour", 22),
         Column("size", "Size", 7),
         Column("qty", "Qty (pcs)", 9, "#,##0"),
@@ -150,8 +145,14 @@ def write_workbook(results: list[PackingList], out_path: Path,
     _style_header(ws2, detail_columns)
     row = 2
     for pl in results:
+        shown_rows: set[tuple[str, int]] = set()
         for line in pl.cartons:
-            values = [pl.source.name, line.carton_no, line.colour, line.size,
+            # Print the carton count once per source row - repeating it on every size
+            # line would make the column add up to several times the real total.
+            key = (pl.source.name, line.row_ref)
+            count_cell = None if key in shown_rows else line.ctn_count
+            shown_rows.add(key)
+            values = [pl.source.name, line.carton_no, count_cell, line.colour, line.size,
                       line.qty, line.net_kg, line.gross_kg, line.cbm]
             for col_index, (column, value) in enumerate(zip(detail_columns, values), start=1):
                 cell = ws2.cell(row=row, column=col_index, value=value)

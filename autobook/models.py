@@ -16,6 +16,8 @@ class CartonLine:
     """One carton within a packing list."""
 
     carton_no: str
+    ctn_count: int = 1
+    row_ref: int = 0  # source grid row: one row can yield several size lines
     colour: str = ""
     size: str = ""
     qty: int = 0
@@ -68,9 +70,27 @@ class PackingList:
             totals[key] = totals.get(key, 0) + line.qty
         return [(c, s, q) for (c, s), q in totals.items()]
 
+    def carton_count_by_row(self) -> list[int]:
+        """Carton count for each source row, in first-seen order.
+
+        A single carton row can carry quantities in several size columns, producing
+        several :class:`CartonLine` entries. The carton count belongs to the row, so
+        it must be counted once - summing it per size line multiplies it.
+        """
+        per_row: dict[int, int] = {}
+        for line in self.cartons:
+            per_row.setdefault(line.row_ref, line.ctn_count)
+        return list(per_row.values())
+
     @property
     def carton_count(self) -> int:
-        return len({line.carton_no for line in self.cartons})
+        """Total cartons shipped.
+
+        Sums the "CTN QTY" column once per carton row. In these documents "CTN NO" is
+        a label and the figure that reconciles with the header total is the adjacent
+        count column, so counting distinct carton numbers would undercount.
+        """
+        return sum(self.carton_count_by_row())
 
     def add_issue(self, field_name: str, problem: str, action: str, severity: str = "review") -> None:
         self.issues.append(Issue(field_name, problem, action, severity))

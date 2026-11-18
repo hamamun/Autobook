@@ -10,7 +10,7 @@ from autobook.extract import extract
 from autobook.extract.profiles import ProfileError, load_profile, load_profiles
 from autobook.paths import app_data_dir  # noqa: F401  (import check)
 
-from .conftest import build_sample
+from .conftest import build_multi_carton, build_sample
 
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "profiles"
 
@@ -92,3 +92,23 @@ def test_broken_profile_raises_profile_error(tmp_path: Path) -> None:
     bad.write_text("name: x\nfields:\n  a: {cast: nonsense}\n", encoding="utf-8")
     with pytest.raises(ProfileError):
         load_profile(bad)
+
+
+def test_carton_count_comes_from_ctn_qty_not_row_count(tmp_path: Path) -> None:
+    """Header total reconciles with the CTN QTY column, not with the number of rows."""
+    path = build_multi_carton(tmp_path / "4500046108-1387-USA FINAL.xlsx")
+    pl = extract(path, load_profiles(PROFILE_DIR))
+
+    assert len(pl.cartons) == 3, "one line per non-zero size cell"
+    assert pl.carton_count == 5, "3 + 2 cartons, from the CTN QTY column"
+    assert pl.carton_count_by_row() == [3, 2], "counted once per row, not per size line"
+    assert [c.row_ref for c in pl.cartons] == [8, 8, 9]
+    # No mismatch should be reported: 5 rows-worth of counts == header 5.
+    problems = " ".join(i.problem for i in pl.issues)
+    assert "cartons" not in problems.lower()
+
+
+def test_colour_forward_fill_works_across_multi_carton_rows(tmp_path: Path) -> None:
+    path = build_multi_carton(tmp_path / "x114.xlsx")
+    pl = extract(path, load_profiles(PROFILE_DIR))
+    assert {c.colour for c in pl.cartons} == {"BC9J-GS BLACK"}

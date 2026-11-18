@@ -8,3 +8,7 @@ __pycache__/
 # Local runs
 docs/demo/
 *.tmp
+
+# Packaging / build artefacts
+build/
+dist/
