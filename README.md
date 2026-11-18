@@ -68,6 +68,19 @@ cartons:
 A file that matches no profile is never guessed at — it gets a row marked with an error
 so the operator can see it was not used.
 
+## Sheets in the data sheet
+
+| Sheet | Purpose |
+|---|---|
+| `Packing_lists` | one row per document (18 predefined columns) |
+| `Carton_lines` | every carton/size line, with its carton count — the audit trail |
+| `Booking_lines` | **one row per portal SKU**, ready to type into the Maersk grid |
+| `Review` | everything a human still needs to check |
+| `About` | when it was prepared, counts, SKU suffix used |
+
+Carton lines are aggregated per style/colour/size because the portal is organised by SKU,
+not by carton. See `docs/maersk-field-mapping.md`.
+
 ## Predefined data sheet headers
 
 Supplier name, Supplier address, Buyer / brand, Order no, Split PO no, Style no,

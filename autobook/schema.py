@@ -44,5 +44,6 @@ KEYS: tuple[str, ...] = tuple(c.key for c in COLUMNS)
 
 #: Sheets in the produced workbook, in tab order.
 SHEET_SUMMARY = "Packing_lists"
+SHEET_BOOKING = "Booking_lines"
 SHEET_LINES = "Carton_lines"
 SHEET_REVIEW = "Review"

@@ -22,6 +22,11 @@ class Settings:
     last_browse_dir: str = ""
     work_dir_override: str = ""
     output_dir_override: str = ""
+    # Site-specific values for the booking page. They cannot be derived from a packing
+    # list, so they live in settings rather than in the extraction profile.
+    sku_suffix: str = ""
+    commodity_code: str = ""
+    country_of_origin: str = "BD"
     extra: dict[str, Any] = field(default_factory=dict)
 
     # -- persistence ---------------------------------------------------------
@@ -43,6 +48,9 @@ class Settings:
             last_browse_dir=str(raw.get("last_browse_dir") or ""),
             work_dir_override=str(raw.get("work_dir_override") or ""),
             output_dir_override=str(raw.get("output_dir_override") or ""),
+            sku_suffix=str(raw.get("sku_suffix") or ""),
+            commodity_code=str(raw.get("commodity_code") or ""),
+            country_of_origin=str(raw.get("country_of_origin") or "BD"),
             extra=extra,
         )
 
@@ -53,6 +61,9 @@ class Settings:
             "last_browse_dir": self.last_browse_dir,
             "work_dir_override": self.work_dir_override,
             "output_dir_override": self.output_dir_override,
+            "sku_suffix": self.sku_suffix,
+            "commodity_code": self.commodity_code,
+            "country_of_origin": self.country_of_origin,
             **self.extra,
         }
         tmp = path.with_suffix(path.suffix + ".tmp")
