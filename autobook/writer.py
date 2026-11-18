@@ -20,8 +20,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .booking import BookingLine, build_all
+from .booking import DEFAULT_SKU_SUFFIX, BookingLine, build_all
 from .models import PackingList
+from .booking import MANDATORY_BOOKING_FIELDS, missing_mandatory
 from .schema import (COLUMNS, SHEET_BOOKING, SHEET_LINES, SHEET_REVIEW, SHEET_SUMMARY,
                      Column)
 
@@ -29,6 +30,14 @@ _FONT = Font(size=10)
 _HEAD_FILL = PatternFill("solid", fgColor="1F3864")
 _HEAD_FONT = Font(color="FFFFFF", bold=True, size=10)
 _THIN = Border(*[Side(style="thin", color="D9D9D9")] * 4)
+
+# A booking field the portal cannot submit without, when it is blank or zero.
+_MISSING_FILL = PatternFill("solid", fgColor="FFC7CE")
+_MISSING_FONT = Font(size=10, color="9C0006", bold=True)
+
+# Portal label -> column key, derived from the single definition in booking.py so the
+# two can never drift apart.
+MANDATORY_KEYS = dict(MANDATORY_BOOKING_FIELDS)
 
 # Confidence -> cell fill, so a weak value is visible at a glance.
 _CONF_FILL = {
@@ -73,6 +82,13 @@ def _worst_confidence(pl: PackingList) -> str:
     return "high"
 
 
+def source_label(pl: PackingList) -> str:
+    """``file.xlsx`` or ``file.xlsx [Sheet1]`` when a tab was chosen explicitly."""
+    if pl.sheet_name and pl.sheet_name != pl.source.stem:
+        return f"{pl.source.name} [{pl.sheet_name}]"
+    return pl.source.name
+
+
 def summary_row(pl: PackingList) -> dict[str, object]:
     """Flatten one packing list into the predefined column set."""
     short: int | None = None
@@ -95,7 +111,7 @@ def summary_row(pl: PackingList) -> dict[str, object]:
         "total_net_kg": pl.total_net_kg,
         "total_gross_kg": pl.total_gross_kg,
         "total_cbm": pl.total_cbm,
-        "source_file": pl.source.name,
+        "source_file": source_label(pl),
         "confidence": _worst_confidence(pl),
         "issues": _issues_text(pl),
     }
@@ -103,9 +119,10 @@ def summary_row(pl: PackingList) -> dict[str, object]:
 
 def write_workbook(results: list[PackingList], out_path: Path,
                    prepared_at: datetime | None = None,
-                   sku_suffix: str = "",
+                   sku_suffix: str = DEFAULT_SKU_SUFFIX,
                    commodity_code: str = "",
-                   country_of_origin: str = "") -> Path:
+                   country_of_origin: str = "",
+                   skipped: list | None = None) -> Path:
     """Write the data sheet and return its path."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +174,7 @@ def write_workbook(results: list[PackingList], out_path: Path,
             key = (pl.source.name, line.row_ref)
             count_cell = None if key in shown_rows else line.ctn_count
             shown_rows.add(key)
-            values = [pl.source.name, line.carton_no, count_cell, line.colour, line.size,
+            values = [source_label(pl), line.carton_no, count_cell, line.colour, line.size,
                       line.qty, line.net_kg, line.gross_kg, line.cbm]
             for col_index, (column, value) in enumerate(zip(detail_columns, values), start=1):
                 cell = ws2.cell(row=row, column=col_index, value=value)
@@ -170,6 +187,7 @@ def write_workbook(results: list[PackingList], out_path: Path,
     # ---- sheet 3: one row per portal SKU ---------------------------------
     booking_columns = [
         Column("source_file", "Source file", 30),
+        Column("po_no", "PO no", 14),
         Column("sku", "SKU number", 22),
         Column("ordered_qty", "Ordered quantity", 11, "#,##0"),
         Column("booked_qty", "Booked quantity", 11, "#,##0"),
@@ -178,6 +196,7 @@ def write_workbook(results: list[PackingList], out_path: Path,
         Column("units_pkg", "Units (booked pkg)", 12),
         Column("qty_per_package", "Qty per package", 11, "#,##0"),
         Column("booked_volume", "Booked volume", 11, "#,##0.0000"),
+        Column("volume_source", "Volume from cartons", 16),
         Column("booked_gross_kg", "Booked gross weight", 12, "#,##0.00"),
         Column("marks", "Marks and numbers", 14),
         Column("description", "Description of goods", 42),
@@ -192,7 +211,10 @@ def write_workbook(results: list[PackingList], out_path: Path,
     _style_header(ws4, booking_columns)
     for row_index, line in enumerate(booking_lines, start=2):
         values = {
-            "source_file": line.source_file,
+            "source_file": (f"{line.source_file} [{line.sheet_name}]"
+                            if line.sheet_name and line.sheet_name != Path(
+                                line.source_file).stem else line.source_file),
+            "po_no": line.po_no,
             "sku": line.sku,
             "ordered_qty": line.ordered_qty,
             "booked_qty": line.booked_qty,
@@ -201,6 +223,9 @@ def write_workbook(results: list[PackingList], out_path: Path,
             "units_pkg": "Carton",
             "qty_per_package": line.qty_per_package,
             "booked_volume": line.booked_volume,
+            # Provenance: the CBM values from the carton lines, so the figure can be
+            # checked against the data sheet without recomputing anything.
+            "volume_source": " + ".join(f"{v:g}" for v in line.carton_cbms),
             "booked_gross_kg": line.booked_gross_kg,
             "marks": "",
             "description": line.description,
@@ -210,6 +235,18 @@ def write_workbook(results: list[PackingList], out_path: Path,
             "carton_numbers": ", ".join(line.carton_numbers),
             "notes": "; ".join(line.notes),
         }
+
+        # A field the portal cannot be submitted without is left red when blank, and
+        # named in Notes so the operator sees why the row cannot be booked yet.
+        missing = missing_mandatory(values)
+        missing_keys = {
+            key for key, label in MANDATORY_KEYS.items() if label in missing
+        }
+        notes = values["notes"]
+        if missing:
+            warning = "MISSING - cannot book until filled: " + ", ".join(missing)
+            values["notes"] = f"{warning}; {notes}" if notes else warning
+
         for col_index, column in enumerate(booking_columns, start=1):
             cell = ws4.cell(row=row_index, column=col_index, value=values.get(column.key))
             cell.font = _FONT
@@ -217,7 +254,14 @@ def write_workbook(results: list[PackingList], out_path: Path,
             if column.number_format:
                 cell.number_format = column.number_format
             cell.alignment = Alignment(vertical="top", wrap_text=column.key in
-                                       {"description", "notes", "carton_numbers"})
+                                       {"description", "notes", "carton_numbers",
+                                        "volume_source"})
+            if column.key in missing_keys:
+                cell.fill = _MISSING_FILL
+                cell.font = _MISSING_FONT
+            elif column.key == "notes" and missing:
+                cell.fill = _MISSING_FILL
+                cell.font = _MISSING_FONT
     if not booking_lines:
         ws4.cell(row=2, column=1, value="No carton lines to convert").font = Font(
             italic=True, size=10)
@@ -235,7 +279,7 @@ def write_workbook(results: list[PackingList], out_path: Path,
     row = 2
     for pl in results:
         for issue in pl.issues:
-            values = [pl.source.name, issue.field, issue.severity, issue.problem, issue.action]
+            values = [source_label(pl), issue.field, issue.severity, issue.problem, issue.action]
             for col_index, value in enumerate(values, start=1):
                 cell = ws3.cell(row=row, column=col_index, value=value)
                 cell.font = _FONT
@@ -253,20 +297,43 @@ def write_workbook(results: list[PackingList], out_path: Path,
     info = wb.create_sheet("About")
     info["A1"] = "Autobook data sheet"
     info["A1"].font = Font(bold=True, size=12)
-    info["A3"] = "Prepared at"
-    info["B3"] = prepared_at.strftime("%Y-%m-%d %H:%M:%S")
-    info["A4"] = "Packing lists"
-    info["B4"] = len(results)
-    info["A5"] = "Carton lines"
-    info["B5"] = sum(len(pl.cartons) for pl in results)
-    info["A8"] = "Booking lines (one per SKU)"
-    info["B8"] = len(booking_lines)
-    info["A9"] = "SKU suffix used"
-    info["B9"] = sku_suffix or "(none - set it in settings)"
-    info["A6"] = "Open issues"
-    info["B6"] = sum(len(pl.issues) for pl in results)
-    info.column_dimensions["A"].width = 18
-    info.column_dimensions["B"].width = 40
+
+    summary = [
+        ("Prepared at", prepared_at.strftime("%Y-%m-%d %H:%M:%S")),
+        ("Packing lists", len(results)),
+        ("Carton lines", sum(len(pl.cartons) for pl in results)),
+        ("Booking lines (one per SKU)", len(booking_lines)),
+        ("Open issues", sum(len(pl.issues) for pl in results)),
+        ("SKU suffix used", sku_suffix or "(none)"),
+        ("Sheets skipped", len(skipped or [])),
+    ]
+    for index, (label, value) in enumerate(summary, start=3):
+        info.cell(row=index, column=1, value=label).font = Font(bold=True, size=10)
+        info.cell(row=index, column=2, value=value).font = _FONT
+    info.column_dimensions["A"].width = 30
+    info.column_dimensions["B"].width = 44
+
+    # Sheets that were inspected and not used. Recorded here and nowhere else, so the
+    # data tabs contain packing lists only.
+    if skipped:
+        start = len(summary) + 6
+        info.cell(row=start, column=1,
+                  value="Sheets skipped - not packing lists, excluded from every tab "
+                        "above").font = Font(bold=True, size=11, color="9C0006")
+        for col, text in enumerate(("File", "Sheet", "Why it was skipped"), start=1):
+            cell = info.cell(row=start + 1, column=col, value=text)
+            cell.fill = _HEAD_FILL
+            cell.font = _HEAD_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        for offset, entry in enumerate(skipped, start=start + 2):
+            values = (getattr(entry, "source_file", ""), getattr(entry, "sheet_name", ""),
+                      getattr(entry, "reason", ""))
+            for col, text in enumerate(values, start=1):
+                cell = info.cell(row=offset, column=col, value=text)
+                cell.font = _FONT
+                cell.border = _THIN
+                cell.alignment = Alignment(vertical="top", wrap_text=col == 3)
+        info.column_dimensions["C"].width = 64
 
     wb.save(out_path)
     return out_path

@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .extract import extract
+from .booking import DEFAULT_SKU_SUFFIX
+from .extract import extract_all
 from .extract.profiles import load_profiles
-from .models import PackingList
+from .models import PackingList, SkippedSheet
 from .paths import output_dir, work_dir
 from .workdir import CopiedFile, copy_into_batch, is_work_dir_writable, make_batch_dir
 from .writer import write_workbook
@@ -31,6 +32,8 @@ class PrepareResult:
     results: list[PackingList] = field(default_factory=list)
     copied: list[CopiedFile] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    #: Sheets that were looked at and not used. Reported only on the About tab.
+    skipped: list[SkippedSheet] = field(default_factory=list)
 
     @property
     def ok_count(self) -> int:
@@ -45,7 +48,7 @@ def prepare(files: list[Path],
             work_root: Path | None = None,
             out_dir: Path | None = None,
             profiles=None,
-            sku_suffix: str = "",
+            sku_suffix: str = DEFAULT_SKU_SUFFIX,
             commodity_code: str = "",
             country_of_origin: str = "") -> PrepareResult:
     """Run the whole Prepare step for ``files``.
@@ -77,10 +80,12 @@ def prepare(files: list[Path],
             problems.append(f"{Path(item).name}: {exc}")
 
     results: list[PackingList] = []
+    skipped: list[SkippedSheet] = []
     active_profiles = profiles if profiles is not None else load_profiles()
     for stored in usable:
         try:
-            results.append(extract(stored, active_profiles))
+            # A workbook may hold several packing-list tabs; each becomes its own row.
+            results.extend(extract_all(stored, active_profiles, skipped))
         except Exception as exc:  # never let one malformed file abort the batch
             failed = PackingList(source=stored)
             failed.add_issue("file", f"Unexpected error while reading: {exc}",
@@ -100,7 +105,9 @@ def prepare(files: list[Path],
         data_sheet = write_workbook(results, out_path,
                                     sku_suffix=sku_suffix,
                                     commodity_code=commodity_code,
-                                    country_of_origin=country_of_origin)
+                                    country_of_origin=country_of_origin,
+                                    skipped=skipped)
 
     return PrepareResult(batch_dir=batch_dir, data_sheet=data_sheet,
-                         results=results, copied=copied, problems=problems)
+                         results=results, copied=copied, problems=problems,
+                         skipped=skipped)

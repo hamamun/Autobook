@@ -24,7 +24,7 @@ class Settings:
     output_dir_override: str = ""
     # Site-specific values for the booking page. They cannot be derived from a packing
     # list, so they live in settings rather than in the extraction profile.
-    sku_suffix: str = ""
+    sku_suffix: str = "BWI"
     commodity_code: str = ""
     country_of_origin: str = "BD"
     extra: dict[str, Any] = field(default_factory=dict)
@@ -48,7 +48,7 @@ class Settings:
             last_browse_dir=str(raw.get("last_browse_dir") or ""),
             work_dir_override=str(raw.get("work_dir_override") or ""),
             output_dir_override=str(raw.get("output_dir_override") or ""),
-            sku_suffix=str(raw.get("sku_suffix") or ""),
+            sku_suffix=str(raw.get("sku_suffix") or "BWI"),
             commodity_code=str(raw.get("commodity_code") or ""),
             country_of_origin=str(raw.get("country_of_origin") or "BD"),
             extra=extra,

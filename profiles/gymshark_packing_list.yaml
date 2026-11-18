@@ -1,9 +1,24 @@
 name: gymshark_packing_list
 
-# Matched against the first few rows of the document (case-insensitive substring).
+# Matched against the first `rows` rows of every sheet (case-insensitive substring).
+# The title is usually a few rows down: supplier name, address, then "PACKING LIST".
 match:
   any_of:
     - "PACKING LIST"
+  rows: 5
+  # Words alone are not enough - a notes tab can mention "packing list". At least one
+  # of these structural labels must also be present, which rules out cover/notes tabs.
+  require_any:
+    - "CTN NO"
+    - "STYLE NO"
+    - "SPLIT PO NO"
+  # Second route in: recognise the document even when the words "PACKING LIST" are
+  # missing. Every label in a group must sit on the SAME header row - a carton table
+  # carries carton no, carton qty, net and gross weight together; nothing else does.
+  signature:
+    - ["CTN NO", "CTN QTY", "N.W", "G.W"]
+    - ["CTN NO", "CTN QTY", "NET", "GROSS"]
+  signature_rows: 100
 
 fields:
   doc_type:
