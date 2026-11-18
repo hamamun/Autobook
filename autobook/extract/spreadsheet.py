@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import CartonLine, PackingList
-from .grid import Grid, cell, find_label_position, read_grid, value_right_of
+from .grid import (Grid, Sheet, cell, find_label_position, read_grid, read_sheets,
+                   value_right_of)
 from .profiles import FieldSpec, Profile, find_profile
 
 
@@ -84,22 +86,97 @@ def _strip_units(value: str) -> float | None:
     return float(match.group(0)) if match else None
 
 
-def extract_with_profile(path: Path, profiles: list[Profile]) -> PackingList:
+def plan_sheets(path: Path, profiles: list[Profile]) -> list[tuple[str, Profile]]:
+    """Which sheets of a workbook hold a packing list, and which profile to use.
+
+    Every sheet is inspected; hidden ones are ignored and any sheet whose top rows do
+    not match a profile is discarded. Returns ``[(sheet_name, profile), ...]``.
+    """
+    return [(entry.sheet_name, entry.profile)  # type: ignore[misc]
+            for entry in survey_sheets(path, profiles) if entry.profile is not None]
+
+
+@dataclass
+class SheetSurvey:
+    """What happened to one sheet during sheet selection."""
+
+    sheet_name: str
+    profile: Profile | None = None
+    reason: str = ""
+
+
+def survey_sheets(path: Path, profiles: list[Profile]) -> list[SheetSurvey]:
+    """Inspect every sheet and say which ones qualify, and why the rest do not."""
+    try:
+        sheets = read_sheets(path)
+    except ValueError:
+        return []
+
+    out: list[SheetSurvey] = []
+    for sheet in sheets:
+        if sheet.hidden:
+            out.append(SheetSurvey(sheet.name, None, "hidden tab - ignored"))
+            continue
+        profile = find_profile(sheet.grid, profiles)
+        if profile is None:
+            out.append(SheetSurvey(
+                sheet.name, None,
+                "not a packing list (no title in the top rows and no carton table)"))
+        else:
+            out.append(SheetSurvey(sheet.name, profile, "packing list"))
+    return out
+
+
+def has_content(pl: PackingList) -> bool:
+    """True when a sheet produced actual packing-list data.
+
+    A tab can mention the words "packing list" without being one (a notes tab, a cover
+    sheet, an index). Requiring at least one field value or one carton line discards
+    those without relying on tab names or guesswork.
+    """
+    return bool(pl.cartons) or any(
+        value not in (None, "")
+        for key, value in vars(pl).items()
+        if key in {"doc_type", "supplier", "order_no", "split_po_no", "style_no",
+                   "description", "order_qty", "ship_qty", "total_cartons",
+                   "total_net_kg", "total_gross_kg", "total_cbm"}
+    )
+
+
+def extract_with_profile(path: Path, profiles: list[Profile],
+                         sheet_name: str | None = None,
+                         profile: Profile | None = None) -> PackingList:
+    """Extract one sheet (default: the first sheet that looks like a packing list)."""
     path = Path(path)
     pl = PackingList(source=path)
 
     try:
-        grid = read_grid(path)
+        sheets = read_sheets(path)
     except ValueError as exc:
         pl.add_issue("file", str(exc), "Re-save the file and add it again", "error")
         return pl
 
-    if not grid:
+    if not sheets:
         pl.add_issue("file", "The document is empty", "Check the file", "error")
         return pl
 
-    profile = find_profile(grid, profiles)
-    if profile is None:
+    # Pick the sheet: an explicit name wins, otherwise the first one that matches.
+    chosen: Sheet | None = None
+    if sheet_name is not None:
+        chosen = next((sh for sh in sheets if sh.name == sheet_name), None)
+        if chosen is None:
+            pl.add_issue("file", f"Sheet '{sheet_name}' no longer exists in {path.name}",
+                         "Re-run Prepare", "error")
+            return pl
+    else:
+        for sh in sheets:
+            if sh.hidden:
+                continue
+            if find_profile(sh.grid, profiles) is not None:
+                chosen = sh
+                break
+
+    if chosen is None:
         pl.add_issue(
             "file",
             "No extraction profile matches this layout",
@@ -109,13 +186,32 @@ def extract_with_profile(path: Path, profiles: list[Profile]) -> PackingList:
         pl.confidence["_profile"] = "none"
         return pl
 
-    pl.confidence["_profile"] = profile.name
+    grid = chosen.grid
+    if not grid:
+        pl.add_issue("file", f"Sheet '{chosen.name}' is empty", "Check the file", "error")
+        return pl
 
-    for spec in profile.fields.values():
+    matched = profile if profile is not None else find_profile(grid, profiles)
+    if matched is None:
+        pl.add_issue(
+            "file",
+            f"Sheet '{chosen.name}' does not match any extraction profile",
+            "Add a profile for this supplier, or fill the row manually",
+            "error",
+        )
+        pl.confidence["_profile"] = "none"
+        return pl
+
+    pl.confidence["_profile"] = matched.name
+    pl.sheet_name = chosen.name
+    if path.suffix.lower() in {".xlsx", ".xlsm"}:
+        pl.sources["sheet"] = chosen.name
+
+    for spec in matched.fields.values():
         _apply_field(pl, spec, grid, path)
 
-    if profile.carton is not None:
-        _read_cartons(pl, profile, grid)
+    if matched.carton is not None:
+        _read_cartons(pl, matched, grid)
 
     _reconcile(pl)
     return pl

@@ -68,6 +68,11 @@ cartons:
 A file that matches no profile is never guessed at — it gets a row marked with an error
 so the operator can see it was not used.
 
+**Multi-tab workbooks.** Every visible tab is inspected. Tabs that hold a packing list
+become their own row (`file.xlsx [tab]`); hidden tabs and tabs with no packing list are
+excluded from `Packing_lists`, `Carton_lines`, `Booking_lines` and `Review` entirely, and
+are listed only on the **About** tab with the reason they were skipped.
+
 ## Sheets in the data sheet
 
 | Sheet | Purpose |
@@ -76,10 +81,12 @@ so the operator can see it was not used.
 | `Carton_lines` | every carton/size line, with its carton count — the audit trail |
 | `Booking_lines` | **one row per portal SKU**, ready to type into the Maersk grid |
 | `Review` | everything a human still needs to check |
-| `About` | when it was prepared, counts, SKU suffix used |
+| `About` | when it was prepared, counts, SKU suffix used, **and every sheet that was skipped** with the reason |
 
 Carton lines are aggregated per style/colour/size because the portal is organised by SKU,
-not by carton. See `docs/maersk-field-mapping.md`.
+not by carton. Rows are keyed on **SKU number + PO number**; the order number is not used
+for matching. SKUs are built as `style-colour-size-BWI`. See
+`docs/maersk-field-mapping.md`.
 
 ## Predefined data sheet headers
 

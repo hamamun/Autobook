@@ -27,6 +27,15 @@ class CartonLine:
 
 
 @dataclass
+class SkippedSheet:
+    """A sheet that was looked at and deliberately not turned into data."""
+
+    source_file: str
+    sheet_name: str
+    reason: str
+
+
+@dataclass
 class Issue:
     """A problem worth a human's attention."""
 
@@ -41,6 +50,7 @@ class PackingList:
     """Normalised contents of one packing list document."""
 
     source: Path
+    sheet_name: str = ""  # which tab of the workbook this row came from
     doc_type: str = ""
     supplier: str = ""
     supplier_address: str = ""
@@ -58,6 +68,7 @@ class PackingList:
     total_cbm: float | None = None
     cartons: list[CartonLine] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
+    discarded_sheets: list[str] = field(default_factory=list)
     confidence: dict[str, str] = field(default_factory=dict)
     sources: dict[str, str] = field(default_factory=dict)
 

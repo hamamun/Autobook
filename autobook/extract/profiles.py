@@ -70,6 +70,15 @@ class CartonSpec:
     max_rows: int = 500
 
 
+#: How many leading rows are searched for the match text. The packing-list title is
+#: rarely in row 1 - it sits under a logo, address block or blank rows.
+DEFAULT_MATCH_ROWS = 5
+
+#: How far down a sheet the structural signature is looked for. Header rows usually sit
+#: within the first few dozen rows, but trailers can push them further down.
+DEFAULT_SIGNATURE_ROWS = 100
+
+
 @dataclass
 class Profile:
     """One document family."""
@@ -79,13 +88,63 @@ class Profile:
     fields: dict[str, FieldSpec] = field(default_factory=dict)
     carton: CartonSpec | None = None
     path: Path | None = None
+    match_rows: int = DEFAULT_MATCH_ROWS
+    #: Labels that must also exist somewhere in the sheet. Words alone are not enough:
+    #: a notes tab can say "PACKING LIST" without being one, but it will not contain
+    #: the carton-table heading.
+    require_any: tuple[str, ...] = ()
+    #: Structural signature: label sets that identify the document even when the title
+    #: is missing. Each group is a set of labels that must all appear in the *same*
+    #: header row - a carton table has carton no, carton qty, net and gross weight on
+    #: one line, which a note or cover tab will never have.
+    signature: tuple[tuple[str, ...], ...] = ()
+    signature_rows: int = DEFAULT_SIGNATURE_ROWS
 
-    def matches(self, grid: list[list[str]], head_rows: int = 8) -> bool:
-        """True when any match string appears in the first ``head_rows`` rows."""
+    def matches(self, grid: list[list[str]], head_rows: int | None = None) -> bool:
+        """True when the sheet looks like this document family.
+
+        Two ways in, either is enough:
+
+        1. the title text appears in the top ``match_rows`` rows **and** one of the
+           ``require_any`` labels exists somewhere in the sheet; or
+        2. the structural signature is present: one header row carries every label of
+           a signature group (used when the words "packing list" are missing).
+        """
+        if self.matches_signature(grid):
+            return True
         if not self.match_any:
             return False
-        head = " ".join(" ".join(row) for row in grid[:head_rows]).upper()
-        return any(token.upper() in head for token in self.match_any)
+        rows = head_rows if head_rows is not None else self.match_rows
+        head = " ".join(" ".join(row) for row in grid[:rows]).upper()
+        if not any(token.upper() in head for token in self.match_any):
+            return False
+        if self.require_any:
+            whole = " ".join(" ".join(row) for row in grid).upper()
+            if not any(token.upper() in whole for token in self.require_any):
+                return False
+        return True
+
+    def matches_signature(self, grid: list[list[str]]) -> bool:
+        """True when one header row carries every label of a signature group.
+
+        Cells are compared individually (see :func:`~.grid.label_cells`), so ``CTN`` in
+        one cell and ``NO`` in the next do not accidentally spell ``CTN NO``.
+        """
+        if not self.signature:
+            return False
+        from .grid import label_cells
+
+        for row_index in range(min(len(grid), self.signature_rows)):
+            cells = label_cells(grid, row_index)
+            if not cells:
+                continue
+            joined = " | ".join(cells)
+            for group in self.signature:
+                if group and all(
+                        label.upper() in cells or label.upper() in joined
+                        for label in group):
+                    return True
+        return False
 
 
 def _require(mapping: dict[str, Any], key: str, where: str) -> Any:
@@ -170,9 +229,36 @@ def load_profile(path: Path) -> Profile:
     if not isinstance(fields_raw, dict):
         raise ProfileError(f"{where}.fields: expected a mapping of key -> spec")
 
+    match_block = raw.get("match") if isinstance(raw.get("match"), dict) else {}
+    match_rows = int(match_block.get("rows", DEFAULT_MATCH_ROWS))
+    if match_rows < 1:
+        raise ProfileError(f"{where}.match.rows: must be 1 or more")
+
+    require_any = match_block.get("require_any") or []
+    if isinstance(require_any, str):
+        require_any = [require_any]
+
+    signature_raw = match_block.get("signature") or []
+    signature: list[tuple[str, ...]] = []
+    for group in signature_raw:
+        if isinstance(group, str):
+            group = [group]
+        if not isinstance(group, (list, tuple)) or not group:
+            raise ProfileError(
+                f"{where}.match.signature: each group must be a list of labels that "
+                "must appear together in one header row")
+        signature.append(tuple(str(g) for g in group))
+    signature_rows = int(match_block.get("signature_rows", DEFAULT_SIGNATURE_ROWS))
+    if signature_rows < 1:
+        raise ProfileError(f"{where}.match.signature_rows: must be 1 or more")
+
     return Profile(
         name=name,
         match_any=tuple(str(m) for m in (match_any or [])),
+        match_rows=match_rows,
+        require_any=tuple(str(r) for r in require_any),
+        signature=tuple(signature),
+        signature_rows=signature_rows,
         fields={k: _parse_field(k, v, where) for k, v in fields_raw.items()},
         carton=_parse_carton(raw["cartons"], where) if raw.get("cartons") else None,
         path=path,

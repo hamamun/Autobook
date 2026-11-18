@@ -20,14 +20,15 @@ Verified against the live portal screenshot: `A6C3T-BC9J-XL-BWI`, 15 pcs, 4.1 kg
 
 | Portal field | Source | Rule |
 |---|---|---|
-| **SKU number** | style no + colour code + size + suffix | `A6C3T` + `BC9J` + `XL` + `BWI`. Suffix is site config (`sku_suffix`), it appears in no packing list |
+| **SKU number** | style no + colour code + size + suffix | `A6C3T` + `BC9J` + `XL` + `BWI`. `BWI` defaults automatically (`DEFAULT_SKU_SUFFIX`) because it appears in no packing list |
+| **PO no** | Split PO no | The second half of the mapping key. The separate order number is not used for matching |
 | **Ordered quantity** | packing list order qty (per document) | Read from the document's ORDER QTY / summary block |
 | **Booked quantity** | sum of every carton of that size | The figure that must equal the shipped total |
 | **Units (booked quantity)\*** | constant | `Each` |
 | **Booked packages** | sum of CTN QTY for that size | Counted once per source row |
 | **Units (booked packages)** | constant | `Carton` |
 | **Qty per package** | booked qty ÷ booked packages | Integer, rounded down; flagged when uneven (124 ÷ 3 showed as 41) |
-| **Booked Volume\*** | **sum of each carton's CBM** | A line covering 6 cartons is 6 × 0.0528 = 0.3168, not 0.0528 |
+| **Booked Volume\*** | **column I (`CBM`) of the carton lines, added across the SKU** | Each line already carries the volume of the cartons it covers (a 6-carton line shows 0.3168). No recalculation is applied; `4500046108` reconciles to the packing list's 2.1648 |
 | **Booked gross weight** | sum of TTL G.W for those cartons | 2 dp |
 | **Marks and numbers** | not on a packing list | Leave blank, or supply per booking |
 | **Description of goods** | description + colour + size | `Power Washed Cut Off Tank, BC9J-GS BLACK/Wash, XL` |
@@ -39,12 +40,53 @@ Verified against the live portal screenshot: `A6C3T-BC9J-XL-BWI`, 15 pcs, 4.1 kg
 
 ## Two things the data proves
 
-**1. Volume is per carton, not per line.** The 6-carton line carries `0.3168`, and the
-2-carton lines carry `0.1056`. So a portal line must sum CBM across all its cartons.
+**1. Volume in column I already accounts for carton count.** A line covering 6 cartons
+carries `0.3168` (6 × 0.0528); a 2-carton line carries `0.1056`. No multiplication is
+needed — but the values must still be **added together** for the lines that share a SKU.
+
+Proof on `4500046108`: 37 carton lines → 28 SKU rows.
+
+| Rule | Total CBM |
+|---|---|
+| Sum column I across each SKU's lines | **2.1648** ← matches the packing list |
+| Copy one line per SKU, no summing | 1.6896 (short by 0.4752) |
+
+The `Booking_lines` sheet carries a `Volume from cartons` column showing the addition
+(e.g. `0.1056 + 0.0528`), so the figure can be checked against the source at a glance.
 
 **2. Carton dimensions differ within one booking.** `4500046108` has cartons of both
 `0.0528` and `0.0630` CBM, and 4 of its rows have no measurement at all. The booking is a
 mix of carton sizes — so a single fixed L×W×H would be wrong.
+
+## How a sheet is recognised as a packing list
+
+Either route is enough:
+
+1. the words `PACKING LIST` appear in the top 5 rows, **and** one of `CTN NO`,
+   `STYLE NO`, `SPLIT PO NO` exists somewhere in the sheet; or
+2. one header row carries `CTN NO`, `CTN QTY`, `N.W` **and** `G.W` together (the
+   structural signature), which works when the title is missing.
+
+Everything else - cover tabs, notes tabs, hidden tabs - is excluded from the data and
+listed on the About tab only.
+
+## Fields that must be filled before the portal will accept a row
+
+The booking grid marks four fields with a red asterisk (`Units (booked quantity)`,
+`Booked volume`, `Cargo type`, `Commodity code`). Operationally five values have to be
+right, and each maps to a column on the data sheet:
+
+| Portal field | Booking_lines column | Source |
+|---|---|---|
+| SKU number | `SKU number` | style + colour code + size + `BWI` |
+| Booked quantity | `Booked quantity` | shipped qty |
+| Booked volume | `Booked volume` | CBM from the carton lines |
+| Booked packages | `Booked packages` | cartons from the source row |
+| Booked gross weight | `Booked gross weight` | gross weight |
+
+**Blank or zero is a failure.** A missing value leaves the cell red (`FFC7CE`) and
+prefixes the row's Notes with `MISSING - cannot book until filled: <fields>`; zero is
+treated exactly like blank because the portal would reject it the same way.
 
 ## What is still undecided
 

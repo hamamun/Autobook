@@ -13,6 +13,18 @@ from pathlib import Path
 
 Grid = list[list[str]]
 
+
+class Sheet:
+    """One worksheet (or the single grid of a CSV) ready for profile matching."""
+
+    def __init__(self, name: str, grid: Grid, hidden: bool = False):
+        self.name = name
+        self.grid = grid
+        self.hidden = hidden
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"Sheet({self.name!r}, {len(self.grid)} rows, hidden={self.hidden})"
+
 _WS = re.compile(r"\s+")
 
 
@@ -32,6 +44,18 @@ def cell(grid: Grid, row: int, col: int) -> str:
     if col < 0 or col >= len(line):
         return ""
     return line[col].strip()
+
+
+def label_cells(grid: Grid, row: int) -> list[str]:
+    """Normalised, non-empty cells of one row - for label comparisons.
+
+    Returns ``["CTN NO", "CTN QTY", "COLOUR", "SIZE", ...]``: each cell upper-cased with
+    internal whitespace collapsed, empty cells dropped. Two adjacent headings such as
+    ``CTN`` and ``NO`` stay separate rather than merging into ``CTN | NO``.
+    """
+    if row < 0 or row >= len(grid):
+        return []
+    return [normalise(value) for value in grid[row] if normalise(value)]
 
 
 def numbers_in(row: list[str]) -> list[float]:
@@ -77,12 +101,21 @@ def value_right_of(grid: Grid, row: int, col: int, max_offset: int = 6) -> str:
 
 
 def read_grid(path: Path) -> Grid:
-    """Load a csv/xlsx/xlsm file into a grid of strings."""
+    """Load the first worksheet of a csv/xlsx/xlsm file into a grid of strings."""
+    return read_sheets(path)[0].grid
+
+
+def read_sheets(path: Path) -> list[Sheet]:
+    """Load every worksheet of a csv/xlsx/xlsm file.
+
+    Hidden and very-hidden tabs are still read (callers decide whether to use them,
+    and the operator is told about them); the ``hidden`` flag carries that state.
+    """
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return _read_csv(path)
+        return [Sheet(path.stem, _read_csv(path))]
     if suffix in {".xlsx", ".xlsm"}:
-        return _read_xlsx(path)
+        return _read_xlsx_sheets(path)
     if suffix == ".xls":
         raise ValueError(
             "Legacy .xls files are not readable. Open the file in Excel and save as "
@@ -110,15 +143,19 @@ def _read_csv(path: Path) -> Grid:
     raise ValueError(f"Could not decode {path.name} - save it as UTF-8 or xlsx.")
 
 
-def _read_xlsx(path: Path) -> Grid:
+def _read_xlsx_sheets(path: Path) -> list[Sheet]:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, data_only=True, read_only=True)
     try:
-        ws = wb[wb.sheetnames[0]]
-        grid: Grid = []
-        for row in ws.iter_rows(values_only=True):
-            grid.append(["" if v is None else str(v).strip() for v in row])
-        return grid
+        sheets: list[Sheet] = []
+        for name in wb.sheetnames:
+            ws = wb[name]
+            hidden = ws.sheet_state in {"hidden", "veryHidden"}
+            grid: Grid = []
+            for row in ws.iter_rows(values_only=True):
+                grid.append(["" if v is None else str(v).strip() for v in row])
+            sheets.append(Sheet(name, grid, hidden))
+        return sheets
     finally:
         wb.close()

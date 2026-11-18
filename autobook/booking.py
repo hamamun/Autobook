@@ -31,12 +31,45 @@ from dataclasses import dataclass, field
 from .models import PackingList
 
 
+#: Fields the Maersk booking grid cannot be submitted without, and the label the
+#: portal uses. Ordered as they appear on the page. A row missing any of these gets a
+#: red cell and a warning in its Notes column.
+MANDATORY_BOOKING_FIELDS: tuple[tuple[str, str], ...] = (
+    ("sku", "SKU number"),
+    ("booked_qty", "Booked quantity"),
+    ("booked_volume", "Booked volume"),
+    ("booked_packages", "Booked packages"),
+    ("booked_gross_kg", "Booked gross weight"),
+)
+
+
+def is_blank(value: object) -> bool:
+    """True when a value is missing or meaningless on the portal.
+
+    Zeros count: 0 CBM, 0 cartons or 0 kg would be rejected by the portal just as
+    surely as an empty cell, so they must be flagged rather than passed through.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (int, float)):
+        return value == 0
+    return False
+
+
+def missing_mandatory(values: dict[str, object]) -> list[str]:
+    """Labels of the mandatory booking fields that are blank or zero."""
+    return [label for key, label in MANDATORY_BOOKING_FIELDS if is_blank(values.get(key))]
+
+
 @dataclass
 class BookingLine:
     """One row of the Maersk booking-details grid."""
 
     source_file: str
-    order_no: str
+    sheet_name: str
+    po_no: str  # mapping key: SKU is matched within a PO
     style_no: str
     colour: str
     colour_code: str
@@ -50,6 +83,7 @@ class BookingLine:
     booked_gross_kg: float
     description: str
     carton_numbers: list[str] = field(default_factory=list)
+    carton_cbms: list[float] = field(default_factory=list)  # the CBM values added up
     notes: list[str] = field(default_factory=list)
 
 
@@ -63,11 +97,16 @@ def colour_code(colour: str) -> str:
     return token.strip().upper()
 
 
-def build_sku(style_no: str, colour: str, size: str, suffix: str = "") -> str:
-    """Assemble a portal SKU number.
+#: Default SKU suffix. The Maersk portal shows ``A6C3T-BC9J-XL-BWI``; the packing lists
+#: never contain ``BWI``, so it is appended by default (still overridable in settings).
+DEFAULT_SKU_SUFFIX = "BWI"
 
-    ``suffix`` is site-specific (``BWI`` appears on the live portal and is not present
-    in any packing list), so it is supplied by configuration rather than guessed.
+
+def build_sku(style_no: str, colour: str, size: str,
+              suffix: str = DEFAULT_SKU_SUFFIX) -> str:
+    """Assemble a portal SKU number: ``style-colour-size-suffix``.
+
+    ``A6C3T`` + ``BC9J`` + ``XL`` + ``BWI`` -> ``A6C3T-BC9J-XL-BWI``.
     """
     parts = [style_no.strip().upper(), colour_code(colour), size.strip().upper()]
     if suffix:
@@ -75,7 +114,7 @@ def build_sku(style_no: str, colour: str, size: str, suffix: str = "") -> str:
     return "-".join(p for p in parts if p)
 
 
-def aggregate(pl: PackingList, sku_suffix: str = "",
+def aggregate(pl: PackingList, sku_suffix: str = DEFAULT_SKU_SUFFIX,
               description_template: str = "{description}, {colour}, {size}") -> list[BookingLine]:
     """Collapse a packing list's carton lines into one :class:`BookingLine` per SKU."""
     grouped: dict[tuple[str, str], list] = {}
@@ -112,7 +151,8 @@ def aggregate(pl: PackingList, sku_suffix: str = "",
 
         lines.append(BookingLine(
             source_file=pl.source.name,
-            order_no=pl.order_no or "",
+            sheet_name=pl.sheet_name,
+            po_no=pl.split_po_no or "",
             style_no=pl.style_no or "",
             colour=colour,
             colour_code=colour_code(colour),
@@ -127,12 +167,14 @@ def aggregate(pl: PackingList, sku_suffix: str = "",
             description=description_template.format(
                 description=pl.description or "", colour=colour, size=size).strip(", "),
             carton_numbers=[i.carton_no for i in items],
+            carton_cbms=[i.cbm for i in items],
             notes=notes,
         ))
     return lines
 
 
-def build_all(packing_lists: list[PackingList], sku_suffix: str = "") -> list[BookingLine]:
+def build_all(packing_lists: list[PackingList],
+              sku_suffix: str = DEFAULT_SKU_SUFFIX) -> list[BookingLine]:
     """Aggregate every packing list in a batch."""
     out: list[BookingLine] = []
     for pl in packing_lists:

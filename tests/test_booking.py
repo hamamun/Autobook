@@ -26,8 +26,10 @@ def test_colour_code_is_the_first_token() -> None:
 
 def test_sku_number_matches_the_portal_format() -> None:
     # Portal screenshot shows A6C3T-BC9J-XL-BWI
+    assert build_sku("A6C3T", "BC9J-GS BLACK/Wash", "XL") == "A6C3T-BC9J-XL-BWI"
     assert build_sku("A6C3T", "BC9J-GS BLACK/Wash", "XL", "BWI") == "A6C3T-BC9J-XL-BWI"
-    assert build_sku("A6C3T", "BC9J-GS BLACK/Wash", "XL") == "A6C3T-BC9J-XL"
+    # the suffix can still be turned off explicitly
+    assert build_sku("A6C3T", "BC9J-GS BLACK/Wash", "XL", "") == "A6C3T-BC9J-XL"
 
 
 def test_two_cartons_of_one_size_become_one_line() -> None:
@@ -60,7 +62,7 @@ def test_multiple_sizes_stay_separate() -> None:
     lines = aggregate(pl)
 
     assert [line.sku for line in lines] == [
-        "A6C3T-BC9J-S", "A6C3T-BC9J-M", "A6C3T-RCQX-S"]
+        "A6C3T-BC9J-S-BWI", "A6C3T-BC9J-M-BWI", "A6C3T-RCQX-S-BWI"]
     assert lines[1].booked_packages == 4
     assert lines[1].qty_per_package == 60
 
@@ -111,6 +113,44 @@ def test_missing_order_quantity_falls_back_and_is_flagged() -> None:
 
     assert line.ordered_qty == 50
     assert any("order quantity not found" in note for note in line.notes)
+
+
+def test_sku_and_po_are_the_mapping_keys() -> None:
+    """The portal is matched on SKU within a PO; the order number is not used."""
+    pl = make_list([("BC9J-GS BLACK/Wash", "XL", "3", 1, 15, 2.93, 4.10, 0.0528)],
+                   style_no="A6C3T", split_po_no="4500060538", order_no="SOMETHING")
+
+    line = aggregate(pl)[0]
+
+    assert line.sku == "A6C3T-BC9J-XL-BWI"
+    assert line.po_no == "4500060538"
+    assert not hasattr(line, "order_no")
+
+
+def test_volume_is_the_cbm_values_added_without_recalculation() -> None:
+    """Column I is placed as-is and added across the SKU - never re-derived."""
+    pl = make_list([
+        ("BC9J-GS BLACK/Wash", "M", "4", 4, 240, 44.12, 56.12, 0.2112),
+        ("BC9J-GS BLACK/Wash", "M", "8", 1, 13, 2.13, 3.30, 0.0528),
+    ], style_no="A6C3T", split_po_no="4500046110", description="Tank")
+
+    line = aggregate(pl)[0]
+
+    assert line.carton_cbms == [0.2112, 0.0528], "the raw values, in order"
+    assert line.booked_volume == 0.264, "0.2112 + 0.0528, nothing else applied"
+
+
+def test_file_total_cbm_is_conserved() -> None:
+    """Summing the SKU volumes reproduces the packing list's own TOTAL CBM."""
+    pl = make_list([
+        ("BC9J-GS BLACK/Wash", "M", "3", 2, 120, 22.06, 24.40, 0.1056),
+        ("BC9J-GS BLACK/Wash", "M", "5", 1, 16, 2.23, 3.40, 0.0528),
+        ("BC9J-GS BLACK/Wash", "L", "6", 1, 60, 11.43, 12.60, 0.0528),
+    ], style_no="A6C3T", description="Tank", total_cbm=0.2112)
+
+    lines = aggregate(pl)
+
+    assert round(sum(line.booked_volume for line in lines), 4) == 0.2112
 
 
 def test_totals_are_conserved_across_the_aggregation() -> None:
