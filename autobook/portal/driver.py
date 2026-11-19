@@ -30,6 +30,35 @@ HOME_URL = "https://www.maersk.com/scp"
 #: Time to wait for a page-level condition.
 DEFAULT_TIMEOUT = 30_000
 
+#: Where Maersk sends you to sign in. The real one is ``accounts.maersk.com`` -
+#: note the plural; ``account.maersk.com`` would never match it.
+LOGIN_HOSTS = (
+    "accounts.maersk.com",
+    "login.microsoftonline.com",
+    "forgerock",
+    "pingfed",
+    "pingone",
+    "okta.com",
+    "auth0.com",
+)
+
+#: Paths that mean "sign-in is in flight" - the OIDC callback bounces through here on
+#: the way back to the portal, so treating it as signed-in would navigate too early.
+LOGIN_PATHS = (
+    "/ocean-maeu/auth/login",
+    "/portaluser/oidc/callback",
+    "/login",
+    "/authorize",
+)
+
+#: A URL on this host, with none of the above, is the portal itself.
+PORTAL_HOST = "maersk.com"
+PORTAL_PATH = "/scp"
+
+#: How long to give the operator to sign in by hand. Generous on purpose: a password
+#: manager, a second factor and a slow corporate VPN can easily take a few minutes.
+LOGIN_TIMEOUT_S = 600
+
 
 class PortalError(RuntimeError):
     """Something on the page did not look the way the mapping says it should."""
@@ -80,9 +109,56 @@ def totals_selectors(label_prefix: str) -> str:
 class Driver:
     """A thin, boring wrapper over a Playwright page."""
 
+    #: Kept on the class so a caller can read the default without importing the module.
+    LOGIN_TIMEOUT_S = LOGIN_TIMEOUT_S
+
     def __init__(self, page, selectors: Selectors | None = None) -> None:
         self.page = page
         self.sel = selectors or Selectors()
+
+    # -- sign-in ---------------------------------------------------------
+    def signed_in(self) -> bool:
+        """True when the page is the portal rather than a sign-in screen.
+
+        Detection is about *where we are*, not about cookies:
+
+        * a sign-in host, or a sign-in/callback path -> not signed in yet;
+        * the portal host with the portal path -> signed in;
+        * anything else (about:blank, a redirect in flight) -> not signed in yet, so the
+          caller keeps waiting rather than acting on a half-loaded page.
+        """
+        url = (self.page.url or "").lower()
+        if not url or url.startswith("about:"):
+            return False
+        if any(host in url for host in LOGIN_HOSTS):
+            return False
+        if any(path in url for path in LOGIN_PATHS):
+            return False
+        return PORTAL_HOST in url and PORTAL_PATH in url
+
+    def wait_for_sign_in(self, timeout_s: int = LOGIN_TIMEOUT_S,
+                         on_wait=None) -> bool:
+        """Block until the operator has signed in, or ``timeout_s`` elapses.
+
+        Autobook never asks for, sees or stores a password: the operator types into
+        Maersk's own sign-in page. This simply waits for that to finish.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout_s
+        announced = False
+        while time.monotonic() < deadline:
+            if self.signed_in():
+                return True
+            if not announced and on_wait:
+                on_wait("Sign in to Maersk in the browser window. Autobook is waiting...")
+                announced = True
+            self.page.wait_for_timeout(1000)
+        return False
+
+    def open_portal(self) -> None:
+        """Go to the portal home, which redirects to sign-in when the session has lapsed."""
+        self.page.goto(HOME_URL, wait_until="domcontentloaded")
 
     # -- waiting ---------------------------------------------------------
     def wait_for(self, selector: str, timeout: int = DEFAULT_TIMEOUT):
@@ -103,6 +179,33 @@ class Driver:
                         return selector
             self.page.wait_for_timeout(250)
         raise PortalError("None of these appeared: " + ", ".join(selectors))
+
+    # -- diagnosis -------------------------------------------------------
+    def snapshot(self, folder, label: str = "failure") -> dict[str, str]:
+        """Save a screenshot and the page HTML, plus the current URL.
+
+        A failing selector is nearly impossible to fix from a traceback alone; this
+        produces the two things that make it a one-line fix - what the page looked like
+        and what the DOM actually contained.
+        """
+        import re
+        from pathlib import Path
+
+        out = Path(folder)
+        out.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", label)[:60]
+        made: dict[str, str] = {}
+        try:
+            made["url"] = self.page.url
+            image = out / f"{safe}.png"
+            self.page.screenshot(path=str(image), full_page=False)
+            made["screenshot"] = str(image)
+            html = out / f"{safe}.html"
+            html.write_text(self.page.content(), encoding="utf-8")
+            made["html"] = str(html)
+        except Exception:                # diagnosis must never mask the real failure
+            logger.warning("could not capture the page", exc_info=True)
+        return made
 
     # -- left navigation -------------------------------------------------
     def open_bookings(self) -> None:
@@ -278,22 +381,46 @@ class Driver:
         logger.info("submitted")
 
 
-def launch(profile_dir: Path, headless: bool = False, channel: str = "msedge"):
-    """Start the browser the operator logs into, and return ``(playwright, browser)``.
+#: The port Edge is asked to listen on when the operator wants to attach to a browser
+#: they started themselves.
+DEBUG_PORT = 9222
 
-    A separate profile folder is not a preference: Chrome 136+ and current Edge refuse
-    remote debugging on the default profile, so the portal session lives here and the
-    operator logs in once.
+
+def launch(profile_dir: Path, headless: bool = False, channel: str = "msedge",
+           attach: bool = False, port: int = DEBUG_PORT):
+    """Return ``(playwright, context)`` for the browser the operator is logged into.
+
+    Two modes, because they solve different problems:
+
+    ``attach=False`` (default)
+        Launch our own browser with a **dedicated profile folder**. The operator logs in
+        once inside it and the session persists. This is the reliable mode: we control
+        the browser, so we can close and restart it cleanly.
+
+    ``attach=True``
+        Connect to a browser **the operator started**, already logged in. Nothing new
+        opens and the existing session is used as-is. The trade-off is that the browser
+        must be started with remote debugging enabled and a **non-default** profile:
+        current Chrome and Edge refuse debugging on the default profile, so a separate
+        ``--user-data-dir`` is unavoidable either way.
     """
     from playwright.sync_api import sync_playwright
 
+    playwright = sync_playwright().start()
+
+    if attach:
+        browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+        # Reuse the operator's existing tab rather than opening a new one, so the run
+        # happens in the window they are watching.
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        return playwright, context
+
     profile_dir = Path(profile_dir)
     profile_dir.mkdir(parents=True, exist_ok=True)
-    playwright = sync_playwright().start()
-    browser = playwright.chromium.launch_persistent_context(
+    context = playwright.chromium.launch_persistent_context(
         user_data_dir=str(profile_dir),
         channel=channel,
         headless=headless,
         viewport={"width": 1600, "height": 1000},
     )
-    return playwright, browser
+    return playwright, context

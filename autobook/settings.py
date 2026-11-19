@@ -35,6 +35,9 @@ class Settings:
     #: Stop at the Review page instead of submitting. **Off by default**: a run is meant
     #: to book. Set it to true to rehearse a fill without submitting anything.
     stop_before_submit: bool = False
+    #: ``"owned"`` launches our own browser (dedicated profile, log in once).
+    #: ``"attach"`` connects to a browser the operator started with remote debugging.
+    browser_mode: str = "owned"
     extra: dict[str, Any] = field(default_factory=dict)
 
     # -- persistence ---------------------------------------------------------
@@ -63,6 +66,7 @@ class Settings:
             country_of_origin=str(raw.get("country_of_origin")
                                   or DEFAULT_COUNTRY_OF_ORIGIN),
             stop_before_submit=bool(raw.get("stop_before_submit", False)),
+            browser_mode=str(raw.get("browser_mode") or "owned"),
             extra=extra,
         )
 
@@ -76,6 +80,7 @@ class Settings:
             "sku_suffix": self.sku_suffix,
             "country_of_origin": self.country_of_origin,
             "stop_before_submit": self.stop_before_submit,
+            "browser_mode": self.browser_mode,
             **self.extra,
         }
         tmp = path.with_suffix(path.suffix + ".tmp")

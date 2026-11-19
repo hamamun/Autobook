@@ -29,6 +29,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--channel", default="msedge",
                         help="installed browser to drive (msedge, chrome)")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--attach", action="store_true",
+                        help="connect to an already-running Edge on port 9222 "
+                             "instead of launching our own")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -36,12 +39,18 @@ def main(argv: list[str] | None = None) -> int:
                         format="%(levelname)s %(name)s: %(message)s")
 
     settings = Settings.load()
+
+    def on_wait(text: str) -> None:
+        print(text, flush=True)
+
     summary = fill_from_data_sheet(
         args.data_sheet,
         profile_dir=settings.browser_profile_dir(),
         stop_before_submit=args.dry_run,
         channel=args.channel,
         headless=args.headless,
+        attach=args.attach,
+        on_wait=on_wait,
     )
     for line in summary.lines:
         print(line)

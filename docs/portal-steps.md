@@ -5,6 +5,80 @@ filling automation follows; it is written in the operator's order, not the code'
 
 Status: **collecting steps**. No code written against this file yet.
 
+## Two ways to get a logged-in browser
+
+The run needs a browser that is already logged in. There are two ways to provide one, and
+only the first ever opens a window of its own.
+
+### Signing in — Autobook never sees your password
+
+No credentials are given to Autobook, stored in settings, or written to disk. The
+password is typed into **Maersk's own sign-in page**, in the browser window. Autobook
+only ever inherits the resulting session.
+
+On **Start filling**:
+
+1. The browser opens and loads the portal.
+2. If the portal lands on a sign-in page, the log says
+   *"Sign in to Maersk in the browser window. Autobook is waiting..."* and the run
+   **waits up to 10 minutes** for you to finish, including any 2FA.
+3. Sign in normally. The run notices the portal has loaded and carries on by itself.
+4. If the session is still valid from a previous run, step 2 is skipped entirely - no
+   window prompt, no waiting.
+
+The session is kept in `browser-profile/`. It expires on Maersk's schedule, not ours, so
+occasionally you will be asked to sign in again - which is exactly step 2.
+
+**How "logged in" is judged** (from the real sign-in URL):
+
+| URL | Verdict |
+|---|---|
+| `accounts.maersk.com/ocean-maeu/auth/login?...` | not signed in - **the real sign-in page** |
+| `maersk.com/portaluser/oidc/callback?code=...` | not signed in - mid-redirect |
+| `maersk.com/scp/...` | signed in |
+| `about:blank` | not signed in - a fresh tab, not a loaded portal |
+
+Note the plural in `accounts.maersk.com`: an earlier guess of `account.maersk.com` would
+never have matched, and the run would have waited the full ten minutes on a page it
+should have recognised instantly.
+
+### A. Autobook's own browser (default)
+
+Click **Start filling** and a browser window opens. That window is the automation's, not
+yours - you log in **inside it**, once, and the session is stored in
+`browser-profile/`, so later runs start logged in.
+
+Why a separate window at all: current Edge and Chrome **refuse remote debugging on the
+default profile**, so an automation-controlled browser must use its own profile folder.
+There is no way to drive the Edge you are already browsing in.
+
+### B. Attach to a browser you started (no new window)
+
+Start Edge yourself with debugging enabled **and a non-default profile**:
+
+```
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ^
+    --remote-debugging-port=9222 ^
+    --user-data-dir="%LOCALAPPDATA%\Autobook\edge-debug" ^
+    https://www.maersk.com/scp
+```
+
+Log in there. Then either set `"browser_mode": "attach"` in `settings.json` or run
+`scripts/run_fill.py --attach`. Nothing new opens; the run uses the window you are
+watching.
+
+The `--user-data-dir` flag is not optional - Edge will ignore the debugging port on the
+default profile.
+
+| | A - own browser | B - attach |
+|---|---|---|
+| Opens a window | **yes**, once per run | no |
+| Log in | once, inside it | once, inside your own |
+| Uses your normal Edge window | no | no |
+| Requires a command line | no | yes, every time |
+
+---
+
 ## The flow so far
 
 ```
@@ -537,6 +611,21 @@ obvious immediately. Only the second is safe to automate.
 Missing rows are **never invented**: a SKU absent from the portal may be absent for a
 reason (not ordered, cancelled line, wrong PO), and adding it would book goods the buyer
 never asked for.
+
+## When a selector is wrong
+
+The filter panel and bookings list were never saved as HTML, so their selectors are the
+one part of this mapping written from screenshots. When one fails:
+
+1. The run writes a **screenshot**, the **page HTML** and the **URL** to
+   `portal-failures/` beside the data sheet.
+2. The error names the file path, so the failing page can be sent back and the selector
+   fixed by reading its DOM instead of guessing again.
+
+A failure on one PO is recorded as that PO's result and **the batch continues** - a
+timeout on the third PO must not abandon the remaining six.
+
+---
 
 ## Decisions taken
 

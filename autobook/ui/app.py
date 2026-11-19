@@ -283,13 +283,21 @@ class App(tk.Tk):
                     profile_dir=self.settings.browser_profile_dir(),
                     ask=self._ask_from_thread,
                     stop_before_submit=self.settings.stop_before_submit,
+                    attach=self.settings.browser_mode == "attach",
+                    on_wait=self._status_from_thread,
                 )
                 self._messages.put(("filled", summary))
-            except Exception:
-                self._messages.put(("error", traceback.format_exc()))
+            except Exception as exc:
+                # Include where the browser was left, so the operator can send the page
+                # back and the failing selector can be fixed rather than guessed at.
+                self._messages.put(("fill_failed", f"{exc}\n\n{traceback.format_exc()}"))
 
         self._worker = threading.Thread(target=work, daemon=True)
         self._worker.start()
+
+    def _status_from_thread(self, text: str) -> None:
+        """Show a waiting message from the worker thread."""
+        self._messages.put(("note", text))
 
     def _ask_from_thread(self, question: str, choices: list[str]) -> str:
         """Ask the operator a question from the worker thread.
@@ -342,6 +350,13 @@ class App(tk.Tk):
                     answer_queue.put(self._ask_dialog(question, list(choices)))
                     continue
 
+                if kind == "note":
+                    # Progress, not completion: the run is still going (it may be
+                    # waiting on the operator to sign in), so _worker must stay set.
+                    self._log(str(payload))
+                    self._set_status(str(payload))
+                    continue
+
                 # Every other message means the worker has finished or moved on.
                 self._worker = None
 
@@ -356,6 +371,8 @@ class App(tk.Tk):
 
                 if kind == "done":
                     self._on_finished(payload)  # type: ignore[arg-type]
+                elif kind == "fill_failed":
+                    self._on_failed(str(payload), title="Start filling failed")
                 else:
                     self._on_failed(str(payload))
         except queue.Empty:
@@ -393,11 +410,16 @@ class App(tk.Tk):
 
         self._refresh_list()
 
-    def _on_failed(self, message: str) -> None:
+    def _on_failed(self, message: str, title: str = "Prepare failed") -> None:
         self._log("ERROR: " + message)
         self._set_status("Failed")
         self._refresh_list()
-        messagebox.showerror("Prepare failed", message)
+        # A failed fill must not look like a failed Prepare - they are different steps
+        # and the operator reacts differently to each.
+        self.fill_btn.configure(state="normal")
+        self.prepare_btn.configure(state="normal")
+        self._worker = None
+        messagebox.showerror(title, message)
 
 
 def _enable_dpi_awareness() -> None:
