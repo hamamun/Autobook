@@ -112,6 +112,11 @@ class App(tk.Tk):
         self.open_output_btn = ttk.Button(action, text="Open data sheet",
                                           command=self.on_open_output, state="disabled")
         self.open_output_btn.pack(side="left", padx=(8, 0))
+        # Enabled only once a data sheet exists: filling the portal is meaningless
+        # without one, and the gate is the honest representation of that dependency.
+        self.fill_btn = ttk.Button(action, text="Start filling",
+                                   command=self.on_fill, state="disabled")
+        self.fill_btn.pack(side="left", padx=(8, 0))
         self.status = ttk.Label(action, text="Ready", foreground="#555")
         self.status.pack(side="right")
 
@@ -226,7 +231,11 @@ class App(tk.Tk):
 
         def work() -> None:
             try:
-                result = prepare(files)
+                result = prepare(
+                    files,
+                    sku_suffix=self.settings.sku_suffix,
+                    country_of_origin=self.settings.country_of_origin,
+                )
                 self._messages.put(("done", result))
             except PrepareError as exc:
                 self._messages.put(("error", str(exc)))
@@ -236,9 +245,77 @@ class App(tk.Tk):
         self._worker = threading.Thread(target=work, daemon=True)
         self._worker.start()
 
+    def on_fill(self) -> None:
+        """Fill the portal from the data sheet just produced.
+
+        Deliberately guarded: no data sheet, no run. The browser work happens in a
+        worker thread like Prepare, so the window stays responsive while the portal is
+        driven.
+        """
+        if not self._result or not self._result.data_sheet:
+            messagebox.showinfo("Start filling",
+                                "Prepare the data sheet first.")
+            return
+        if self._worker:
+            return
+        if not messagebox.askyesno(
+                "Start filling",
+                "Autobook will drive Edge to fill the bookings for every PO in the "
+                "data sheet.\n\n"
+                "Leave the browser alone while it runs, and make sure you are logged "
+                "in. Nothing is submitted unless every check passes.\n\n"
+                "Continue?"):
+            return
+
+        self.fill_btn.configure(state="disabled")
+        self.prepare_btn.configure(state="disabled")
+        self._set_status("Filling the portal...")
+        self._log("")
+        self._log("--- Portal filling started ---")
+
+        data_sheet = self._result.data_sheet
+
+        def work() -> None:
+            try:
+                from ..portal.session import fill_from_data_sheet
+                summary = fill_from_data_sheet(
+                    data_sheet,
+                    profile_dir=self.settings.browser_profile_dir(),
+                    ask=self._ask_from_thread,
+                    stop_before_submit=self.settings.stop_before_submit,
+                )
+                self._messages.put(("filled", summary))
+            except Exception:
+                self._messages.put(("error", traceback.format_exc()))
+
+        self._worker = threading.Thread(target=work, daemon=True)
+        self._worker.start()
+
+    def _ask_from_thread(self, question: str, choices: list[str]) -> str:
+        """Ask the operator a question from the worker thread.
+
+        The dialog must run on the Tk thread, so the worker blocks on a queue until the
+        main loop answers. Without this a mid-run question would deadlock the UI.
+        """
+        answer: queue.Queue[str] = queue.Queue(maxsize=1)
+        self._messages.put(("ask", (question, choices, answer)))
+        return answer.get()
+
     def on_open_output(self) -> None:
         if self._result and self._result.data_sheet:
             self._open_path(self._result.data_sheet)
+
+    def _ask_dialog(self, question: str, choices: list[str]) -> str:
+        """A modal question with a free-text box, or a list of choices."""
+        if choices:
+            from tkinter import simpledialog
+            return simpledialog.askstring(
+                "Autobook needs an answer",
+                question + "\n\nType one of:\n  " + "\n  ".join(choices),
+                parent=self) or choices[0]
+        from tkinter import simpledialog
+        return simpledialog.askstring(
+            "Autobook needs an answer", question, parent=self) or ""
 
     def _open_path(self, target: Path) -> None:
         """Hand a file to the OS default application."""
@@ -257,7 +334,26 @@ class App(tk.Tk):
         try:
             while True:
                 kind, payload = self._messages.get_nowait()
+
+                if kind == "ask":
+                    # The worker is blocked waiting for this answer, so the run is not
+                    # finished and _worker must stay set.
+                    question, choices, answer_queue = payload
+                    answer_queue.put(self._ask_dialog(question, list(choices)))
+                    continue
+
+                # Every other message means the worker has finished or moved on.
                 self._worker = None
+
+                if kind == "filled":
+                    summary = payload
+                    for line in getattr(summary, "lines", []):
+                        self._log(line)
+                    self._set_status(getattr(summary, "headline", "Portal run finished"))
+                    self.fill_btn.configure(state="normal")
+                    self.prepare_btn.configure(state="normal")
+                    continue
+
                 if kind == "done":
                     self._on_finished(payload)  # type: ignore[arg-type]
                 else:
@@ -287,6 +383,7 @@ class App(tk.Tk):
         if result.data_sheet:
             self._log(f"Data sheet written: {result.data_sheet}")
             self.open_output_btn.configure(state="normal")
+            self.fill_btn.configure(state="normal")
             self._set_status(f"Done - {result.ok_count}/{len(result.results)} file(s) clean")
         else:
             self._set_status("Nothing could be prepared")

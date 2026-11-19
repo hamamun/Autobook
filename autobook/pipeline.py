@@ -14,6 +14,7 @@ from .booking import DEFAULT_SKU_SUFFIX
 from .extract import extract_all
 from .extract.profiles import load_profiles
 from .models import PackingList, SkippedSheet
+from .settings import DEFAULT_COUNTRY_OF_ORIGIN
 from .paths import output_dir, work_dir
 from .workdir import CopiedFile, copy_into_batch, is_work_dir_writable, make_batch_dir
 from .writer import write_workbook
@@ -49,8 +50,7 @@ def prepare(files: list[Path],
             out_dir: Path | None = None,
             profiles=None,
             sku_suffix: str = DEFAULT_SKU_SUFFIX,
-            commodity_code: str = "",
-            country_of_origin: str = "") -> PrepareResult:
+            country_of_origin: str = DEFAULT_COUNTRY_OF_ORIGIN) -> PrepareResult:
     """Run the whole Prepare step for ``files``.
 
     Raises :class:`PrepareError` only when nothing at all can be done (no files,
@@ -104,7 +104,6 @@ def prepare(files: list[Path],
             counter += 1
         data_sheet = write_workbook(results, out_path,
                                     sku_suffix=sku_suffix,
-                                    commodity_code=commodity_code,
                                     country_of_origin=country_of_origin,
                                     skipped=skipped)
 

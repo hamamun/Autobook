@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from autobook.pipeline import PrepareError, prepare  # noqa: E402
+from autobook.settings import Settings  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,11 +27,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None, help="override output directory")
     parser.add_argument("--sku-suffix", default="",
                         help="suffix appended to portal SKUs, e.g. BWI")
+    parser.add_argument("--country-of-origin", default="",
+                        help="country of origin written on every row")
     args = parser.parse_args(argv)
 
+    stored = Settings.load()
     try:
         result = prepare(args.files, work_root=args.work, out_dir=args.out,
-                         sku_suffix=args.sku_suffix)
+                         sku_suffix=args.sku_suffix or stored.sku_suffix,
+                         country_of_origin=(args.country_of_origin
+                                            or stored.country_of_origin))
     except PrepareError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

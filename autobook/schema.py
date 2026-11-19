@@ -47,3 +47,16 @@ SHEET_SUMMARY = "Packing_lists"
 SHEET_BOOKING = "Booking_lines"
 SHEET_LINES = "Carton_lines"
 SHEET_REVIEW = "Review"
+SHEET_REPORT = "Report"
+
+#: One row per PO worked by the portal, success or failure.
+REPORT_COLUMNS: tuple[Column, ...] = (
+    Column("po_no", "PO no", 15),
+    Column("booking_no", "Booking no", 16),
+    Column("status", "Result", 14),
+    Column("portal_status", "Portal status", 22),
+    Column("matched", "SKUs filled", 12, "#,##0"),
+    Column("skipped", "SKUs skipped", 12, "#,##0"),
+    Column("submitted", "Submitted", 11),
+    Column("problems", "What happened", 66),
+)
