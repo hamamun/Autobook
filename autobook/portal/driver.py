@@ -59,6 +59,11 @@ PORTAL_PATH = "/scp"
 #: manager, a second factor and a slow corporate VPN can easily take a few minutes.
 LOGIN_TIMEOUT_S = 600
 
+#: The bookings list itself. Going straight to the route beats clicking a flyout open:
+#: the portal is a single-page app, the URL is stable, and there is no hover to get
+#: wrong. Booking *detail* pages live one segment further down this path.
+BOOKINGS_URL = "https://www.maersk.com/scp/cmhub/ordermanagement/bookings"
+
 
 class PortalError(RuntimeError):
     """Something on the page did not look the way the mapping says it should."""
@@ -69,8 +74,10 @@ class Selectors:
     """Every selector used, in one place, so a portal change is a one-line edit."""
 
     # -- left navigation -------------------------------------------------
-    nav_export: str = 'nav >> text="Export"'
-    nav_bookings: str = 'text="Bookings"'
+    # Navigation is route-first (see BOOKINGS_URL), so there is no flyout selector here.
+    # The old ``text="Bookings"`` matched 61 hidden spans on the live portal and never
+    # resolved to the one visible link; a selector that cannot be trusted is worse than
+    # no selector at all.
 
     # -- bookings list ---------------------------------------------------
     filters_button: str = 'button:has-text("Filters")'
@@ -181,6 +188,70 @@ class Driver:
         raise PortalError("None of these appeared: " + ", ".join(selectors))
 
     # -- diagnosis -------------------------------------------------------
+    #: Collects what is on the page, walking open shadow roots (the portal is built
+    #: from web components, so a plain ``querySelectorAll`` on the document misses most
+    #: of it). One pass, capped, so it stays cheap enough to run on every failure.
+    _INVENTORY_JS = """
+    () => {
+      const out = {url: location.href, title: document.title,
+                   buttons: [], inputs: [], links: [], testids: {}};
+      const cap = 80;
+      const walk = (root) => {
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+          const r = el.getBoundingClientRect();
+          if (!r.width || !r.height) continue;         // invisible: not our business
+          const tag = el.tagName.toLowerCase();
+          const testid = el.getAttribute('data-testid') || '';
+          if (testid) out.testids[testid] = (out.testids[testid] || 0) + 1;
+          const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+          if (tag === 'button' && out.buttons.length < cap)
+            out.buttons.push(text + (testid ? '  [' + testid + ']' : ''));
+          if (tag === 'input' && out.inputs.length < cap)
+            out.inputs.push({placeholder: (el.placeholder || '').slice(0, 40),
+                             name: el.name || '', type: el.type || '', testid: testid});
+          if (tag === 'a' && text && out.links.length < cap)
+            out.links.push(text + '  -> ' + (el.getAttribute('href') || ''));
+        }
+      };
+      walk(document);
+      return out;
+    }
+    """
+
+    def inventory(self) -> dict:
+        """What the page actually contains: visible buttons, inputs, links, testids.
+
+        A traceback says a selector failed; only the page itself says what to use
+        instead. Collected on every failure so one run yields enough to fix several
+        selectors at once, instead of one round trip per wrong guess.
+        """
+        return self.page.evaluate(self._INVENTORY_JS)
+
+    @staticmethod
+    def format_inventory(data: dict) -> str:
+        """Render the inventory as text that can be read in thirty seconds."""
+        lines = [f"URL  : {data.get('url', '')}",
+                 f"TITLE: {data.get('title', '')}", ""]
+        for heading, key in (("VISIBLE BUTTONS", "buttons"),
+                             ("VISIBLE LINKS", "links")):
+            items = data.get(key) or []
+            lines.append(f"-- {heading} ({len(items)}) --")
+            lines.extend(f"  {item}" for item in items)
+            lines.append("")
+        inputs = data.get("inputs") or []
+        lines.append(f"-- VISIBLE INPUTS ({len(inputs)}) --")
+        for item in inputs:
+            bits = [f'{k}={v}' for k, v in item.items() if v]
+            lines.append("  " + "  ".join(bits))
+        lines.append("")
+        testids = data.get("testids") or {}
+        lines.append(f"-- DATA-TESTIDS ({len(testids)}) --")
+        for name in sorted(testids):
+            count = testids[name]
+            lines.append(f"  {name}" + (f"  x{count}" if count > 1 else ""))
+        return "\n".join(lines)
+
     def snapshot(self, folder, label: str = "failure") -> dict[str, str]:
         """Save a screenshot and the page HTML, plus the current URL.
 
@@ -203,19 +274,109 @@ class Driver:
             html = out / f"{safe}.html"
             html.write_text(self.page.content(), encoding="utf-8")
             made["html"] = str(html)
+            try:
+                text = out / f"{safe}-inventory.txt"
+                text.write_text(self.format_inventory(self.inventory()), encoding="utf-8")
+                made["inventory"] = str(text)
+            except Exception:            # noqa: BLE001 - the screenshots still count
+                logger.warning("could not inventory the page", exc_info=True)
         except Exception:                # diagnosis must never mask the real failure
             logger.warning("could not capture the page", exc_info=True)
         return made
 
     # -- left navigation -------------------------------------------------
+    def on_bookings_list(self, timeout_ms: int = 5000) -> bool:
+        """True when the bookings list is on screen (its own ``Filters`` control)."""
+        try:
+            self.page.locator(self.sel.filters_button).first.wait_for(
+                state="visible", timeout=timeout_ms)
+            return True
+        except Exception:                 # noqa: BLE001 - "not there" is a normal answer
+            return False
+
+    def _first_visible(self, selectors):
+        """The first element that is **actually visible**, or ``None``.
+
+        Playwright's ``text="Bookings"`` matches every element containing the word,
+        including the closed flyouts and templates behind them - on the real portal
+        that was 61 hidden ``<span>Bookings</span>`` and not one visible. Taking
+        ``.first`` therefore clicked a hidden element and waited forever. Visibility is
+        the only property that distinguishes the one real link from the rest.
+        """
+        for selector in selectors:
+            found = self.page.locator(selector)
+            try:
+                total = found.count()
+            except Exception:             # noqa: BLE001 - a bad selector must not stop us
+                continue
+            for index in range(total):
+                item = found.nth(index)
+                try:
+                    if item.is_visible():
+                        return item
+                except Exception:         # noqa: BLE001
+                    continue
+        return None
+
+    def _open_bookings_via_nav(self) -> None:
+        """Last resort: find a visible Bookings link, opening the flyout if needed."""
+        target = self._first_visible((
+            'nav a:visible:has-text("Bookings")',
+            '[role="navigation"] a:visible:has-text("Bookings")',
+            'a[href*="/ordermanagement/bookings"]:visible',
+            '[role="menuitem"]:visible:has-text("Bookings")',
+        ))
+        if target is None:
+            export = self._first_visible((
+                'nav :visible:has-text("Export")',
+                '[role="navigation"] :visible:has-text("Export")',
+            ))
+            if export is not None:
+                export.hover()
+                self.page.wait_for_timeout(500)
+                target = self._first_visible((
+                    'nav a:visible:has-text("Bookings")',
+                    '[role="menuitem"]:visible:has-text("Bookings")',
+                    'text="Bookings" >> visible=true',
+                ))
+        if target is None:
+            raise PortalError(
+                "No visible \"Bookings\" link in the portal navigation "
+                f"(page: {self.page.url})")
+        target.click()
+        logger.info("opened Bookings from the navigation")
+
     def open_bookings(self) -> None:
-        """Export (flyout) ▸ Bookings. The flyout needs a hover, then a click."""
-        export = self.page.locator(self.sel.nav_export).first
-        export.hover()
-        bookings = self.page.locator(self.sel.nav_bookings).first
-        bookings.wait_for(state="visible")
-        bookings.click()
-        logger.info("opened Bookings")
+        """Get to the bookings list: the route first, the navigation only if that fails.
+
+        The previous version hovered ``Export`` and clicked ``text="Bookings"``. Both
+        parts were guesses, and the second one resolved to a hidden span and timed out.
+        A route cannot be ambiguous, so it is tried first and verified by waiting for
+        the list's own ``Filters`` control rather than a fixed sleep.
+        """
+        if self.on_bookings_list(1500):
+            logger.info("already on the bookings list")
+            return
+
+        self.page.goto(BOOKINGS_URL, wait_until="domcontentloaded")
+        if self.on_bookings_list():
+            logger.info("opened Bookings by route")
+            return
+
+        logger.info("route did not settle; trying the navigation")
+        try:
+            self._open_bookings_via_nav()
+        except Exception:                 # noqa: BLE001 - reported below, with the URL
+            logger.warning("navigation fallback failed", exc_info=True)
+
+        if self.on_bookings_list():
+            logger.info("opened Bookings from the navigation")
+            return
+
+        raise PortalError(
+            "Could not open the bookings list. Tried the route "
+            f"{BOOKINGS_URL} and the navigation; neither showed a Filters button. "
+            f"Page is at {self.page.url}")
 
     # -- filters ---------------------------------------------------------
     def filter_by_order(self, po_no: str) -> None:
@@ -264,12 +425,13 @@ class Driver:
         """Return from a booking page to the list.
 
         Needed between POs: the next PO starts by filtering, and that is meaningless
-        while an edit page is still open.
+        while an edit page is still open. This used ``get_by_text("Bookings")``, which
+        has the same hidden-span problem as the navigation, so it shares one code path.
         """
-        back = self.page.get_by_text("Bookings", exact=True)
-        if back.count():
-            back.first.click()
-            self.page.locator(self.sel.filters_button).first.wait_for(state="visible")
+        if self.on_bookings_list(1000):
+            logger.info("back to the bookings list")
+            return
+        self.open_bookings()
         logger.info("back to the bookings list")
 
     def start_editing(self) -> None:
