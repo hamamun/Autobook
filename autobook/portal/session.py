@@ -144,6 +144,7 @@ def fill_from_data_sheet(data_sheet: Path,
                 detail = (f"\n\nSaved for diagnosis:"
                           f"\n  screenshot: {made.get('screenshot', '-')}"
                           f"\n  page HTML : {made.get('html', '-')}"
+                          f"\n  inventory : {made.get('inventory', '-')}"
                           f"\n  page URL  : {made.get('url', '-')}")
             raise RuntimeError(f"{exc}{detail}") from exc
 

@@ -8,6 +8,10 @@ code fallback, the review comparison, and the status read back after submit.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
+
 from decimal import Decimal
 
 import pytest
@@ -726,3 +730,209 @@ def test_only_one_snapshot_helper_exists() -> None:
 
     assert hasattr(Driver, "snapshot")
     assert not hasattr(Selectors, "snapshot")
+
+
+# --------------------------------------------------------------------------
+# navigation: hidden spans are not links
+# --------------------------------------------------------------------------
+
+class FakeElement:
+    """One element in the page, with the only property that matters: visibility."""
+
+    def __init__(self, visible: bool, on_click=None):
+        self.visible = visible
+        self.clicks = 0
+        self.hovered = False
+        self._on_click = on_click
+
+    def is_visible(self) -> bool:
+        return self.visible
+
+    def hover(self) -> None:
+        self.hovered = True
+
+    def click(self) -> None:
+        if not self.visible:
+            raise AssertionError("clicked a hidden element")
+        self.clicks += 1
+        if self._on_click:
+            self._on_click()
+
+    def wait_for(self, state=None, timeout=None) -> None:
+        if state == "visible" and not self.visible:
+            raise AssertionError("wait_for(visible) on a hidden element")
+
+
+class FakeLocator:
+    """A Playwright locator over a fixed set of elements."""
+
+    def __init__(self, elements):
+        self._elements = list(elements)
+
+    @property
+    def first(self):
+        if not self._elements:
+            raise AssertionError("strict mode: no element to take .first of")
+        return self._elements[0]
+
+    def count(self) -> int:
+        return len(self._elements)
+
+    def nth(self, index):
+        return self._elements[index]
+
+
+class FakeNavPage:
+    """The real portal's shape: 61 hidden ``<span>Bookings</span>``, one real link."""
+
+    HIDDEN_SPANS = 61
+
+    def __init__(self, *, route_works=False, visible_link=True):
+        self.url = "https://www.maersk.com/scp/cmhub/home"
+        self.route_works = route_works
+        self.visible_link = visible_link
+        self.gotos = []
+        self.filters_visible = False
+        self.hidden_link = FakeElement(False)
+
+    def locator(self, selector):
+        if selector == 'button:has-text("Filters")':
+            return FakeLocator([FakeElement(True)] if self.filters_visible else [])
+        if "Bookings" in selector or "Export" in selector:
+            # Every text match also hits the closed flyouts and templates behind them.
+            elements = [FakeElement(False) for _ in range(self.HIDDEN_SPANS)]
+            if self.visible_link:
+                def follow_link():
+                    if self.route_works:
+                        self.filters_visible = True
+                elements.append(FakeElement(True, on_click=follow_link))
+            return FakeLocator(elements)
+        return FakeLocator([])
+
+    def goto(self, url, wait_until=None):
+        self.gotos.append(url)
+        if self.route_works:
+            self.filters_visible = True
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def test_navigation_goes_by_route_first() -> None:
+    from autobook.portal.driver import BOOKINGS_URL, Driver
+
+    page = FakeNavPage(route_works=True)
+    Driver(page).open_bookings()
+    assert page.gotos == [BOOKINGS_URL]
+
+
+def test_a_hidden_bookings_span_is_never_clicked() -> None:
+    """The regression: `.first` picked a hidden span and the run timed out."""
+    from autobook.portal.driver import PortalError, Driver
+
+    page = FakeNavPage(route_works=False, visible_link=False)
+    try:
+        Driver(page).open_bookings()
+    except PortalError as exc:
+        assert "Could not open the bookings list" in str(exc)
+    else:
+        raise AssertionError("should have reported a clear error, not hung")
+
+
+def test_a_visible_bookings_link_is_used_when_the_route_fails() -> None:
+    """Route dead, but the nav link works -> the run still gets where it is going."""
+    from autobook.portal.driver import Driver
+
+    class RouteDeadLinkWorks(FakeNavPage):
+        def goto(self, url, wait_until=None):
+            self.gotos.append(url)          # the route loads, but not the list
+
+        def locator(self, selector):
+            found = super().locator(selector)
+            if "Bookings" in selector or "Export" in selector:
+                visible = [FakeElement(True, on_click=None)]
+                visible[0]._on_click = lambda: setattr(self, "filters_visible", True)
+                return FakeLocator([FakeElement(False)] * self.HIDDEN_SPANS + visible)
+            return found
+
+    page = RouteDeadLinkWorks(route_works=False, visible_link=True)
+    Driver(page).open_bookings()
+    assert page.gotos, "the route is tried before the navigation"
+    assert page.filters_visible, "the visible link was followed"
+
+
+def test_navigation_is_skipped_when_already_on_the_list() -> None:
+    from autobook.portal.driver import Driver
+
+    page = FakeNavPage(route_works=True)
+    page.filters_visible = True
+    Driver(page).open_bookings()
+    assert page.gotos == [], "no need to navigate twice"
+
+
+def test_the_inventory_names_what_the_page_contains() -> None:
+    """A traceback says a selector failed; the inventory says what to use instead."""
+    from autobook.portal.driver import Driver
+
+    text = Driver.format_inventory({
+        "url": "https://www.maersk.com/scp/cmhub/home",
+        "title": "Maersk",
+        "buttons": ["Filters  [bookings-filters]"],
+        "links": ["Bookings  -> /scp/cmhub/ordermanagement/bookings"],
+        "inputs": [{"placeholder": "Order", "testid": "order"}],
+        "testids": {"order": 1, "filters": 2},
+    })
+    assert "-- VISIBLE BUTTONS (1) --" in text
+    assert "bookings-filters" in text
+    assert "filters  x2" in text
+
+
+def test_the_inventory_script_is_valid_javascript() -> None:
+    """It is a string until Playwright runs it, so a typo would only surface during a
+    failure - the worst possible moment to discover it."""
+    import re
+    from pathlib import Path
+
+    from autobook.portal.driver import Driver
+
+    js = Driver._INVENTORY_JS
+    assert js.count("(") == js.count(")")
+    assert js.count("{") == js.count("}")
+    # A doubled backslash turns /\s+/ into a literal backslash-s. That happened once.
+    assert "\\\\" not in js, "a stray Python escape leaked into the JS"
+    assert re.search(r"replace\(/\\s\+/g", js), "the whitespace collapse is intact"
+
+    node = shutil.which("node")
+    if node:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as handle:
+            handle.write("const f = " + js.strip() + ";")
+            path = handle.name
+        try:
+            result = subprocess.run([node, "--check", path], capture_output=True,
+                                    text=True)
+        finally:
+            Path(path).unlink()
+        assert result.returncode == 0, result.stderr
+
+
+def test_failure_evidence_includes_the_inventory(tmp_path) -> None:
+    from autobook.portal.driver import Driver
+
+    class P:
+        url = "https://www.maersk.com/scp/x"
+
+        def screenshot(self, path, full_page=False):
+            from pathlib import Path
+            Path(path).write_bytes(b"png")
+
+        def content(self):
+            return "<html></html>"
+
+        def evaluate(self, js):
+            return {"url": self.url, "title": "T", "buttons": ["Filters"],
+                    "links": [], "inputs": [], "testids": {"a": 1}}
+
+    made = Driver(P()).snapshot(tmp_path, "portal-failure")
+    assert made["screenshot"] and made["html"]
+    assert "-inventory.txt" in made["inventory"]
+    assert "VISIBLE BUTTONS" in open(made["inventory"], encoding="utf-8").read()

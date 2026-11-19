@@ -10,6 +10,37 @@ Status: **collecting steps**. No code written against this file yet.
 The run needs a browser that is already logged in. There are two ways to provide one, and
 only the first ever opens a window of its own.
 
+### Getting to the bookings list
+
+Autobook navigates **by URL**: `maersk.com/scp/cmhub/ordermanagement/bookings`, then waits
+for the list's own `Filters` button to appear. A route cannot be ambiguous.
+
+The earlier version hovered `Export` and clicked `text="Bookings"`. On the live portal that
+text matched **61 hidden `<span>Bookings</span>`** — closed flyouts and templates — and not
+one visible element, so the click never happened and the run waited 30 seconds for nothing.
+
+If the route does not settle, the fallback looks for a **visible** Bookings link
+(`nav a:visible:has-text(...)`, `[role="menuitem"]`, an `href` containing
+`/ordermanagement/bookings`), opening the Export flyout only if needed. Taking `.first` of a
+text match is gone from this codebase; visibility checks are used instead. If nothing
+visible is found the error names the URL it was on, rather than timing out silently.
+
+### What a failure leaves behind
+
+Every failure writes four things to `<data sheet folder>/portal-failures/`, so one run
+tells us enough to fix several selectors at once instead of one per attempt:
+
+| File | What it answers |
+|---|---|
+| `portal-failure.png` | what the screen actually looked like |
+| `portal-failure.html` | the real DOM, shadow roots included |
+| `portal-failure-inventory.txt` | **visible** buttons, links, inputs and every `data-testid` |
+| the error text | the URL it was on, plus paths to all three |
+
+The inventory walks open shadow roots and skips anything with zero size, so it lists what
+was on screen rather than what shipped in the bundle. Send that file and the screenshot;
+they identify wrong selectors directly.
+
 ### Signing in — Autobook never sees your password
 
 No credentials are given to Autobook, stored in settings, or written to disk. The
