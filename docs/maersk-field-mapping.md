@@ -88,6 +88,20 @@ right, and each maps to a column on the data sheet:
 prefixes the row's Notes with `MISSING - cannot book until filled: <fields>`; zero is
 treated exactly like blank because the portal would reject it the same way.
 
+## Fixed values written on every row
+
+Three fields are the same on every booking line, so a run needs no extra input:
+
+| Column | Heading | Value | Why |
+|---|---|---|---|
+| O | `Cargo type` | `Flat pack` | the portal dropdown has one value in this operation; `Dry`, `None` or blank is coerced, never copied |
+| P | `Commodity code` | blank | the portal pre-fills it and there is no fixed code for us to state |
+| Q | `Country of origin` | `BD` | always Bangladesh; written so the operator can check it against the page |
+
+Only `country_of_origin` is configurable (`settings.json`, or
+`scripts/run_prepare.py --country-of-origin`). Cargo type is a constant and the commodity
+code is deliberately never written.
+
 ## What is still undecided
 
 **Cargo type.** The portal has two rows with identical per-carton volume (0.072) but

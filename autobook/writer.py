@@ -22,9 +22,10 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .booking import DEFAULT_SKU_SUFFIX, BookingLine, build_all
 from .models import PackingList
-from .booking import MANDATORY_BOOKING_FIELDS, missing_mandatory
-from .schema import (COLUMNS, SHEET_BOOKING, SHEET_LINES, SHEET_REVIEW, SHEET_SUMMARY,
-                     Column)
+from .booking import (MANDATORY_BOOKING_FIELDS, missing_mandatory,
+                      normalise_cargo_type)
+from .schema import (COLUMNS, REPORT_COLUMNS, SHEET_BOOKING, SHEET_LINES,
+                     SHEET_REPORT, SHEET_REVIEW, SHEET_SUMMARY, Column)
 
 _FONT = Font(size=10)
 _HEAD_FILL = PatternFill("solid", fgColor="1F3864")
@@ -57,6 +58,19 @@ def _style_header(ws: Worksheet, columns: tuple[Column, ...] | list[Column]) -> 
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}1"
+
+
+def _report_problems(result) -> list[str]:
+    """What happened, with the skipped SKUs named and quantified.
+
+    A skipped SKU is not just a note: it is goods that will not be on the booking, so the
+    report spells out what was left behind rather than only counting it.
+    """
+    out = list(result.problems)
+    if result.skipped:
+        out.append(f"{len(result.skipped)} SKU(s) not on the portal - booking not "
+                   "submitted: " + "; ".join(result.skipped))
+    return out
 
 
 def _issues_text(pl: PackingList) -> str:
@@ -120,9 +134,9 @@ def summary_row(pl: PackingList) -> dict[str, object]:
 def write_workbook(results: list[PackingList], out_path: Path,
                    prepared_at: datetime | None = None,
                    sku_suffix: str = DEFAULT_SKU_SUFFIX,
-                   commodity_code: str = "",
                    country_of_origin: str = "",
-                   skipped: list | None = None) -> Path:
+                   skipped: list | None = None,
+                   report=None) -> Path:
     """Write the data sheet and return its path."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,8 +243,12 @@ def write_workbook(results: list[PackingList], out_path: Path,
             "booked_gross_kg": line.booked_gross_kg,
             "marks": "",
             "description": line.description,
-            "cargo_type": "",
-            "commodity_code": commodity_code,
+            # The portal dropdown only accepts "Flat pack"; anything the source
+            # suggests (Dry, None, blank) is coerced rather than copied.
+            "cargo_type": normalise_cargo_type(None),
+            # Deliberately blank: the portal pre-fills the commodity code and there is
+            # no fixed value for us to state.
+            "commodity_code": "",
             "country_of_origin": country_of_origin,
             "carton_numbers": ", ".join(line.carton_numbers),
             "notes": "; ".join(line.notes),
@@ -292,6 +310,34 @@ def write_workbook(results: list[PackingList], out_path: Path,
             row += 1
     if row == 2:
         ws3.cell(row=2, column=1, value="Nothing to review").font = Font(italic=True, size=10)
+
+    # ---- sheet 5: what the portal run did, one row per PO -----------------
+    if report is not None and report.results:
+        ws5 = wb.create_sheet(SHEET_REPORT)
+        _style_header(ws5, REPORT_COLUMNS)
+        for row_index, result in enumerate(report.results, start=2):
+            values = {
+                "po_no": result.po_no,
+                "booking_no": result.booking_no,
+                "status": result.status,
+                "portal_status": result.portal_status,
+                "matched": result.matched,
+                "skipped": len(result.skipped),
+                "submitted": "yes" if result.submitted else "no",
+                "problems": "; ".join(_report_problems(result)),
+            }
+            for col_index, column in enumerate(REPORT_COLUMNS, start=1):
+                cell = ws5.cell(row=row_index, column=col_index,
+                                value=values.get(column.key))
+                cell.font = _FONT
+                cell.border = _THIN
+                if column.number_format:
+                    cell.number_format = column.number_format
+                cell.alignment = Alignment(vertical="top", wrap_text=column.key in
+                                           {"problems", "portal_status"})
+                if column.key == "status":
+                    cell.fill = (_MISSING_FILL if not result.ok
+                                 else PatternFill("solid", fgColor="C6EFCE"))
 
     # ---- provenance ------------------------------------------------------
     info = wb.create_sheet("About")

@@ -31,6 +31,20 @@ from dataclasses import dataclass, field
 from .models import PackingList
 
 
+#: The cargo-type dropdown on the portal takes one value in this operation. Source
+#: documents sometimes say "Dry" or nothing at all; the portal line must still read
+#: "Flat pack", so every value is coerced rather than passed through.
+PORTAL_CARGO_TYPE = "Flat pack"
+
+
+def normalise_cargo_type(value: object) -> str:
+    """Return the value the portal requires, whatever the source said.
+
+    ``"Dry"``, ``"dry"``, ``"None"``, ``""`` and ``None`` all become ``"Flat pack"``.
+    """
+    return PORTAL_CARGO_TYPE
+
+
 #: Fields the Maersk booking grid cannot be submitted without, and the label the
 #: portal uses. Ordered as they appear on the page. A row missing any of these gets a
 #: red cell and a warning in its Notes column.
