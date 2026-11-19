@@ -79,6 +79,9 @@ class FakePortal(Driver):
     def back_to_bookings(self):
         self.calls.append("back")
 
+    def open_bookings(self):
+        self.calls.append("open_bookings")
+
     # -- edit page -------------------------------------------------------
     def start_editing(self):
         self.calls.append("edit")
@@ -406,6 +409,7 @@ def test_filters_are_cleared_between_pos(two_lines, matching_rows) -> None:
     clears = [call for call in portal.calls if call == "clear"]
     assert len(clears) == 1, "cleared once, between the two POs"
     assert portal.calls.index("clear") > portal.calls.index("filter:4500046108")
+    assert portal.calls[0] == "open_bookings", "navigates to the list before filtering"
 
 
 # --------------------------------------------------------------------------
@@ -514,3 +518,211 @@ def test_the_batch_carries_on_after_an_incomplete_po(two_lines) -> None:
     assert outcomes[1].result.status == STATUS_DONE
     assert portal.submitted, "the second PO was still submitted"
     assert "back" in portal.calls and "clear" in portal.calls
+
+
+def test_a_timeout_on_one_po_does_not_abandon_the_batch(matching_rows) -> None:
+    """A PortalError or a bare timeout on PO 1 must not stop PO 2."""
+    from autobook.portal.driver import PortalError
+
+    class Flaky(FakePortal):
+        def filter_by_order(self, po_no):
+            if po_no == "4500046108":
+                raise PortalError('Timeout: waiting for locator("...")')
+            super().filter_by_order(po_no)
+
+    portal = Flaky(rows={"4500046108-1-10": "A6C3T-BC9J-S-BW1",
+                         "4500046110-1-10": "A6C3T-BC9J-S-BW1"},
+                   review_totals={"Total quantity": "40", "Total packages": "1",
+                                  "Total weight": "8.1", "Total volume": "0.053"})
+    only_s = [line("A6C3T-BC9J-S-BWI", qty=40, pkgs=1, kg=8.1, cbm=0.0528)]
+
+    outcomes = run(["4500046108", "4500046110"],
+                   {"4500046108": only_s, "4500046110": only_s}, portal)
+
+    assert outcomes[0].result.status == STATUS_FAILED
+    assert "Timeout" in outcomes[0].result.problems[0]
+    assert outcomes[1].result.status == STATUS_DONE
+
+
+def test_a_bare_exception_is_also_contained() -> None:
+    """Anything unexpected must be recorded, not raised out of the batch."""
+    class Broken(FakePortal):
+        def filter_by_order(self, po_no):
+            raise AttributeError("'NoneType' object has no attribute 'locator'")
+
+    portal = Broken(rows={})
+    outcomes = run(["4500046108"], {"4500046108": []}, portal)
+
+    assert outcomes[0].result.status == STATUS_FAILED
+    assert "AttributeError" in outcomes[0].result.problems[0]
+
+
+# --------------------------------------------------------------------------
+# browser modes
+# --------------------------------------------------------------------------
+
+def test_attach_mode_reuses_the_operators_context(monkeypatch, tmp_path) -> None:
+    """Attaching must not launch a browser."""
+    pytest.importorskip("playwright")
+    from autobook.portal import driver as driver_module
+
+    calls = {}
+
+    class FakeContext:
+        pages = []
+        closed = False
+        def close(self): FakeContext.closed = True
+
+    class FakeBrowser:
+        contexts = [FakeContext()]
+        def new_context(self):
+            calls["new_context"] = True
+            return FakeContext()
+
+    class FakeChromium:
+        def connect_over_cdp(self, url):
+            calls["url"] = url
+            return FakeBrowser()
+        def launch_persistent_context(self, **kwargs):
+            calls["launched"] = True
+            return FakeContext()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+        def stop(self): calls["stopped"] = True
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright",
+                        lambda: type("M", (), {"start": staticmethod(lambda: FakePlaywright())}))
+
+    playwright, context = driver_module.launch(tmp_path / "profile", attach=True, port=9222)
+    assert calls["url"] == "http://127.0.0.1:9222"
+    assert "launched" not in calls, "attaching must not start its own browser"
+    assert isinstance(context, FakeContext)
+
+
+def test_owned_mode_launches_with_the_dedicated_profile(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("playwright")
+    from autobook.portal import driver as driver_module
+
+    calls = {}
+
+    class FakeChromium:
+        def launch_persistent_context(self, **kwargs):
+            calls.update(kwargs)
+            return object()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright",
+                        lambda: type("M", (), {"start": staticmethod(lambda: FakePlaywright())}))
+
+    driver_module.launch(tmp_path / "profile", channel="msedge", attach=False)
+    assert calls["user_data_dir"] == str(tmp_path / "profile")
+    assert calls["channel"] == "msedge"
+
+
+# --------------------------------------------------------------------------
+# sign-in
+# --------------------------------------------------------------------------
+
+class FakePage:
+    """Enough of a Playwright page to test the sign-in gate."""
+
+    def __init__(self, url="https://www.maersk.com/scp/home", urls=None):
+        self.url = url
+        self._urls = list(urls or [])
+        self.waits = 0
+
+    def wait_for_timeout(self, ms):
+        self.waits += 1
+        if self._urls:
+            self.url = self._urls.pop(0)
+
+    def goto(self, url, wait_until=None):
+        self.goto_url = url
+
+
+def test_a_portal_url_is_signed_in() -> None:
+    from autobook.portal.driver import Driver
+
+    assert Driver(FakePage("https://www.maersk.com/scp/cmhub/x")).signed_in()
+
+
+@pytest.mark.parametrize("url", [
+    # The real sign-in page, copied from the operator's browser.
+    "https://accounts.maersk.com/ocean-maeu/auth/login?nonce=uksUe8TESBeWonbRlZ3C"
+    "&scope=openid%20profile%20email&client_id=portaluser"
+    "&redirect_uri=https%3A%2F%2Fwww.maersk.com%2Fportaluser%2Foidc%2Fcallback"
+    "&response_type=code&originalUrl=https%3A%2F%2Fwww.maersk.com%2Fscp%2F",
+    # The callback on the way back - not signed in yet, or we navigate too early.
+    "https://www.maersk.com/portaluser/oidc/callback?code=abc&state=xyz",
+    "https://login.microsoftonline.com/common/oauth2/authorize",
+    "https://maersk-pingfed.forgerock.com/login",
+])
+def test_a_login_url_is_not_signed_in(url) -> None:
+    from autobook.portal.driver import Driver
+
+    assert not Driver(FakePage(url)).signed_in()
+
+
+def test_a_blank_tab_is_not_signed_in() -> None:
+    """A freshly opened tab must not be mistaken for a loaded portal."""
+    from autobook.portal.driver import Driver
+
+    assert not Driver(FakePage("about:blank")).signed_in()
+
+
+def test_waiting_returns_true_once_the_login_page_goes_away() -> None:
+    from autobook.portal.driver import Driver
+
+    page = FakePage("https://login.microsoftonline.com/x",
+                    urls=["https://login.microsoftonline.com/y",
+                          "https://www.maersk.com/scp/home"])
+    told = []
+    assert Driver(page).wait_for_sign_in(timeout_s=10, on_wait=told.append) is True
+    assert told, "the operator is told to sign in"
+
+
+def test_waiting_gives_up_and_says_so() -> None:
+    from autobook.portal.driver import Driver
+
+    page = FakePage("https://login.microsoftonline.com/x")
+    assert Driver(page).wait_for_sign_in(timeout_s=1) is False
+
+
+def test_credentials_are_never_part_of_the_api() -> None:
+    """A password must never be a parameter, a setting, or a stored value."""
+    import inspect
+
+    from autobook import settings as settings_module
+    from autobook.portal import session
+
+    params = set(inspect.signature(session.fill_from_data_sheet).parameters)
+    assert not any("password" in p or "credential" in p or "secret" in p or "token" in p
+                   for p in params)
+    fields = set(settings_module.Settings.__dataclass_fields__)
+    assert not any("password" in f or "credential" in f or "token" in f for f in fields)
+
+
+def test_a_progress_note_does_not_end_the_run() -> None:
+    """``note`` is progress. Clearing the worker on it would let the operator start a
+    second run while the first is still waiting on the sign-in."""
+    # Read the file rather than importing it: this box has no tkinter, and the point
+    # being tested is the order of two branches in the source.
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parents[1] / "autobook" / "ui" / "app.py"
+    src = ui.read_text(encoding="utf-8")
+    src = src[src.index("def _drain_messages"):src.index("def _on_finished")]
+    note_branch = src.index('kind == "note"')
+    clear = src.index("self._worker = None")
+    assert note_branch < clear, "the note branch must come before the clear"
+
+
+def test_only_one_snapshot_helper_exists() -> None:
+    """Diagnosis has one implementation; a stale copy on Selectors would rot."""
+    from autobook.portal.driver import Driver, Selectors
+
+    assert hasattr(Driver, "snapshot")
+    assert not hasattr(Selectors, "snapshot")

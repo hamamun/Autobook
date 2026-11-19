@@ -26,6 +26,7 @@ class RunSummary:
     report: BookingReport
     outcomes: list[PoOutcome] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
+    evidence_dir: Path | None = None
 
     @property
     def headline(self) -> str:
@@ -91,13 +92,24 @@ def fill_from_data_sheet(data_sheet: Path,
                          stop_before_submit: bool = False,
                          channel: str = "msedge",
                          headless: bool = False,
-                         driver=None) -> RunSummary:
+                         driver=None,
+                         attach: bool = False,
+                         port: int = 9222,
+                         evidence_dir: Path | None = None,
+                         on_wait: Callable[[str], None] | None = None,
+                         login_timeout_s: int | None = None) -> RunSummary:
     """Fill every PO in ``data_sheet`` and return the report.
 
     ``driver`` is injectable so the whole run can be exercised without a browser.
     """
     by_po = lines_from_data_sheet(data_sheet)
     lines: list[str] = [f"{len(by_po)} PO(s) in the data sheet: {', '.join(by_po)}"]
+
+    # Evidence goes next to the data sheet: when the selectors are wrong, a screenshot
+    # and the page HTML are what turn a guess into a one-line fix.
+    if evidence_dir is None:
+        evidence_dir = Path(data_sheet).parent / "portal-failures"
+    evidence_dir = Path(evidence_dir)
 
     owns_browser = driver is None
     playwright = None
@@ -106,12 +118,34 @@ def fill_from_data_sheet(data_sheet: Path,
         if owns_browser:
             from .driver import Driver, launch
             playwright, context = launch(Path(profile_dir), headless=headless,
-                                         channel=channel)
+                                         channel=channel, attach=attach, port=port)
             page = context.pages[0] if context.pages else context.new_page()
             driver = Driver(page)
 
-        outcomes = run(by_po.keys(), by_po, driver, ask=ask,
-                       stop_before_submit=stop_before_submit)
+            # Open the portal, and if it lands on a sign-in screen, wait for the operator
+            # to sign in. Autobook never handles credentials: they are typed into
+            # Maersk's own page, and only the resulting session is reused.
+            driver.open_portal()
+            timeout_s = (login_timeout_s if login_timeout_s is not None
+                         else driver.LOGIN_TIMEOUT_S)
+            if not driver.signed_in():
+                if not driver.wait_for_sign_in(timeout_s, on_wait=on_wait):
+                    raise RuntimeError(
+                        "Not signed in. Sign in to Maersk in the browser window and run "
+                        "again - the session is kept, so this only happens once.")
+
+        try:
+            outcomes = run(by_po.keys(), by_po, driver, ask=ask,
+                           stop_before_submit=stop_before_submit)
+        except Exception as exc:
+            made = driver.snapshot(evidence_dir, "portal-failure")
+            detail = ""
+            if made:
+                detail = (f"\n\nSaved for diagnosis:"
+                          f"\n  screenshot: {made.get('screenshot', '-')}"
+                          f"\n  page HTML : {made.get('html', '-')}"
+                          f"\n  page URL  : {made.get('url', '-')}")
+            raise RuntimeError(f"{exc}{detail}") from exc
 
         report = BookingReport()
         for outcome in outcomes:
@@ -126,9 +160,13 @@ def fill_from_data_sheet(data_sheet: Path,
                 lines.append(f"    skipped: {skipped}")
 
         lines.append(report.summary_line())
-        return RunSummary(report=report, outcomes=outcomes, lines=lines)
+        return RunSummary(report=report, outcomes=outcomes, lines=lines,
+                          evidence_dir=evidence_dir)
     finally:
-        if owns_browser and context is not None:
+        # When we launched the browser we close it; when attached to the operator's own
+        # browser we leave it open - closing a window they are using would be rude and
+        # loses their session view.
+        if owns_browser and context is not None and not attach:
             context.close()
         if playwright is not None:
             playwright.stop()

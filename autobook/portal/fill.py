@@ -321,6 +321,11 @@ def run(po_numbers: Iterable[str],
         ask: Callable[[str, Sequence[str]], str] | None = None,
         stop_before_submit: bool = False) -> list[PoOutcome]:
     """Work every PO in turn, clearing filters between them."""
+    # Navigate to the bookings list first. Without this the run starts on whatever page
+    # the browser happened to open, and every filter would look for controls that are
+    # not there.
+    driver.open_bookings()
+
     outcomes: list[PoOutcome] = []
     for index, po_no in enumerate(po_numbers):
         if index:
@@ -328,12 +333,13 @@ def run(po_numbers: Iterable[str],
         try:
             outcomes.append(fill_po(driver, po_no, lines_by_po.get(po_no, []),
                                     ask=ask, stop_before_submit=stop_before_submit))
-        except (PortalError, NeedsUser) as exc:
-            # One bad PO must not end the batch. This PO is reported and the next one
-            # starts; NeedsUser is a question nobody answered, not a crash.
+        except Exception as exc:          # noqa: BLE001 - deliberately broad
+            # One bad PO must not end the batch. A timeout on PO 3 should not abandon
+            # POs 4-9; the failure is recorded and the next PO starts. This is the outer
+            # safety net, not the normal path - PortalError is expected and handled.
             logger.exception("PO %s failed", po_no)
             result = PoResult(po_no=po_no)
-            result.problems.append(str(exc) or exc.__class__.__name__)
+            result.problems.append(f"{exc.__class__.__name__}: {exc}".strip())
             outcomes.append(PoOutcome(result.finish(), []))
             try:
                 driver.back_to_bookings()
